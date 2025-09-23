@@ -24,9 +24,9 @@ model:
 
 train:
   batch_size: 256
-  epochs_phase1: 20
-  epochs_phase2: 20
-  epochs_probe: 20
+  epochs_phase1: 10
+  epochs_phase2: 10
+  epochs_probe: 10
   num_workers: 0
   ckpt_dir: ckpts/
   vae:
@@ -45,7 +45,7 @@ train:
     weight_decay: 0.0
 
 wandb:
-  enabled: false
+  enabled: true
   project: "repr-world"
   entity: null
   group: null

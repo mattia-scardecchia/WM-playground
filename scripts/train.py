@@ -168,7 +168,7 @@ def train_phase1_contrastive(cfg, device, wb):
     phi_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt")
     g_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_g.pt")
 
-    return phi_path, g_path
+    return phi_path, g_path, final_metrics
 
 
 def train_phase2_dynamics(cfg, device, z_space: str, wb):

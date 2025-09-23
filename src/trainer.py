@@ -55,9 +55,10 @@ class GenericTrainer:
         # Console logging
         print(f"[{phase_name.upper()}] Epoch {epoch + 1}: {metrics_str}")
 
-        # Wandb logging - just add phase and epoch to the metrics
+        # Wandb logging
         if self.wb is not None:
-            wandb_metrics = {"phase": phase_name, "epoch": epoch + 1, **metrics}
+            wandb_metrics = {f"{phase_name}/{k}": v for k, v in metrics.items()}
+            wandb_metrics.update({f"{phase_name}/epoch": epoch + 1})
             wandb.log(wandb_metrics)
 
     def save_checkpoint(self, model) -> list:
