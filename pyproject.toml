@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repr-world"
+version = "0.1.0"
+description = "Representation learning in a grid world environment"
+authors = [
+    {name = "Mattia Scardecchia", email = "mattia.scardecchia@nyu.edu"},
+]
+dependencies = [
+    "torch",
+    "numpy",
+    "wandb",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter",
+    "ipykernel",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+
+[tool.setuptools.package-dir]
+"" = "src"

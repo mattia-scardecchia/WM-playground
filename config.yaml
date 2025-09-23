@@ -1,0 +1,54 @@
+data:
+  D: 102
+  signal_dim: 2
+  noise_dim: 100
+  traj_len: 200
+  step_size: 0.1
+  n_train: 300
+  n_val: 30
+  n_test: 30
+  seed: 0
+  out_dir: data/
+
+# Note: the variance of the signal, computed across all timesteps and trajectories, is s^2 * (T+1)/2 if we ignore correlations.
+
+model:
+  z_dim_vae: 2
+  z_dim_contrastive: 2
+  enc_widths: [256, 256]
+  dec_widths: [256, 256] # vae only
+  proj_widths: [256, 256]
+  dyn_widths: [256, 256]
+  probe_widths: [64, 64]
+  activation: "relu" # "relu" or "tanh"
+
+train:
+  batch_size: 256
+  epochs_phase1: 20
+  epochs_phase2: 20
+  epochs_probe: 20
+  num_workers: 0
+  ckpt_dir: ckpts/
+  vae:
+    lr: 0.002
+    weight_decay: 0.0
+    beta: 0.001
+  contrastive:
+    lr: 0.001
+    weight_decay: 0.0
+    temperature: 0.1
+  dynamics:
+    lr: 0.001
+    weight_decay: 0.0
+  probe:
+    lr: 0.001
+    weight_decay: 0.0
+
+wandb:
+  enabled: false
+  project: "repr-world"
+  entity: null
+  group: null
+  mode: "online" # use "offline" on clusters without egress
+  dir: "logs"
+  tags: ["toy", "repr"]
