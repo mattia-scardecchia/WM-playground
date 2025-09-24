@@ -8,7 +8,18 @@ from abc import ABC, abstractmethod
 from utils import make_mlp, to_onehot
 
 
-class TrainableModel(ABC):
+def _unpack_batch(
+    batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int = 4
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Helper function to prepare batch data for dynamics and contrastive models"""
+    s = batch["s"].to(device)
+    sp = batch["sp"].to(device)
+    a = batch["a"].to(device)
+    a1h = to_onehot(a, num_actions).to(device)
+    return s, sp, a, a1h
+
+
+class TrainableModel(nn.Module, ABC):
     """Base class for models that can be trained with the generic trainer"""
 
     @abstractmethod
@@ -17,6 +28,16 @@ class TrainableModel(ABC):
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Perform one training step
+        Returns: (loss, metrics_dict)
+        """
+        pass
+
+    @abstractmethod
+    def validation_step(
+        self, batch: Dict[str, torch.Tensor], device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Perform one validation step
         Returns: (loss, metrics_dict)
         """
         pass
@@ -40,17 +61,6 @@ class TrainableModel(ABC):
         """Return the model identifier for logging and file naming"""
         pass
 
-    def get_metrics_format(self, metrics: Dict[str, float]) -> str:
-        """Format metrics for console logging. Override if needed."""
-        metric_strs = [f"{k}={v:.4f}" for k, v in metrics.items()]
-        return (
-            f"({', '.join(metric_strs)})"
-            if len(metric_strs) > 1
-            else f"{metric_strs[0]}"
-            if metric_strs
-            else ""
-        )
-
 
 def beta_vae_loss(x_hat, x, mu, logvar, beta: float):
     """Beta-VAE loss function"""
@@ -59,7 +69,7 @@ def beta_vae_loss(x_hat, x, mu, logvar, beta: float):
     return recon + beta * kl, {"recon": recon.item(), "kl": kl.item()}
 
 
-class VAE(nn.Module, TrainableModel):
+class VAE(TrainableModel):
     def __init__(
         self,
         x_dim: int,
@@ -100,7 +110,25 @@ class VAE(nn.Module, TrainableModel):
         x_hat, mu, logvar, z = self(x)
         loss, parts = beta_vae_loss(x_hat, x, mu, logvar, self.beta)
 
-        metrics = {"loss": loss.item(), "recon": parts["recon"], "kl": parts["kl"]}
+        metrics = {
+            "train_loss": loss.item(),
+            "train_recon": parts["recon"],
+            "train_kl": parts["kl"],
+        }
+        return loss, metrics
+
+    def validation_step(
+        self, batch: Dict[str, torch.Tensor], device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        x = batch["s"].to(device)
+        x_hat, mu, logvar, z = self(x)
+        loss, parts = beta_vae_loss(x_hat, x, mu, logvar, self.beta)
+
+        metrics = {
+            "val_loss": loss.item(),
+            "val_recon": parts["recon"],
+            "val_kl": parts["kl"],
+        }
         return loss, metrics
 
     def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -127,11 +155,8 @@ class VAE(nn.Module, TrainableModel):
     def id(self) -> str:
         return "vae"
 
-    def get_metrics_format(self, metrics: Dict[str, float]) -> str:
-        return f"loss={metrics['loss']:.4f} (recon={metrics['recon']:.4f}, kl={metrics['kl']:.4f})"
 
-
-class NachumModel(nn.Module, TrainableModel):
+class NachumModel(TrainableModel):
     def __init__(
         self,
         x_dim: int,
@@ -159,10 +184,7 @@ class NachumModel(nn.Module, TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s = batch["s"].to(device)
-        sp = batch["sp"].to(device)
-        a = batch["a"].to(device)
-        a1h = to_onehot(a, 4).to(device)
+        s, sp, a, a1h = _unpack_batch(batch, device)
 
         z = self.phi(s)  # B, D
         zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
@@ -171,7 +193,22 @@ class NachumModel(nn.Module, TrainableModel):
         target = torch.arange(z.size(0), device=device)
         loss = F.cross_entropy(logits, target)
 
-        metrics = {"loss": loss.item()}
+        metrics = {"train_loss": loss.item()}
+        return loss, metrics
+
+    def validation_step(
+        self, batch: Dict[str, torch.Tensor], device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        s, sp, a, a1h = _unpack_batch(batch, device)
+
+        z = self.phi(s)  # B, D
+        zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
+        diff = z[:, None, :] - zpos[None, :, :]  # B, B, D
+        logits = -torch.sum(diff**2, dim=-1) / self.temperature
+        target = torch.arange(z.size(0), device=device)
+        loss = F.cross_entropy(logits, target)
+
+        metrics = {"val_loss": loss.item()}
         return loss, metrics
 
     def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -202,7 +239,7 @@ class NachumModel(nn.Module, TrainableModel):
         return "contrastive"
 
 
-class DynamicsModel(nn.Module, TrainableModel):
+class DynamicsModel(TrainableModel):
     def __init__(
         self, z_dim: int, a_dim: int, widths, z_space: str, activation: str = "relu"
     ):
@@ -222,10 +259,7 @@ class DynamicsModel(nn.Module, TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s = batch["s"].to(device)
-        sp = batch["sp"].to(device)
-        a = batch["a"].to(device)
-        a1h = F.one_hot(a.long(), num_classes=4).float()
+        s, sp, a, a1h = _unpack_batch(batch, device)
 
         with torch.no_grad():
             z = self.encoder_fn(s)
@@ -234,7 +268,22 @@ class DynamicsModel(nn.Module, TrainableModel):
         z_next_pred = self(z, a1h)
         loss = self.mse(z_next_pred, z_next_true)
 
-        metrics = {"mse": loss.item()}
+        metrics = {"train_mse": loss.item()}
+        return loss, metrics
+
+    def validation_step(
+        self, batch: Dict[str, torch.Tensor], device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        s, sp, a, a1h = _unpack_batch(batch, device)
+
+        with torch.no_grad():
+            z = self.encoder_fn(s)
+            z_next_true = self.encoder_fn(sp)
+
+        z_next_pred = self(z, a1h)
+        loss = self.mse(z_next_pred, z_next_true)
+
+        metrics = {"val_mse": loss.item()}
         return loss, metrics
 
     def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -261,7 +310,7 @@ class DynamicsModel(nn.Module, TrainableModel):
         return f"dyn-{self.z_space}"
 
 
-class Probe(nn.Module, TrainableModel):
+class Probe(TrainableModel):
     def __init__(
         self, z_dim: int, z_space: str, widths=(64, 64), activation: str = "relu"
     ):
@@ -290,7 +339,22 @@ class Probe(nn.Module, TrainableModel):
         pos_pred = self(z)
         loss = self.mse(pos_pred, pos_true)
 
-        metrics = {"mse": loss.item()}
+        metrics = {"train_mse": loss.item()}
+        return loss, metrics
+
+    def validation_step(
+        self, batch: Dict[str, torch.Tensor], device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        s = batch["s"].to(device)
+        pos_true = s[:, :2]
+
+        with torch.no_grad():
+            z = self.encoder_fn(s)
+
+        pos_pred = self(z)
+        loss = self.mse(pos_pred, pos_true)
+
+        metrics = {"val_mse": loss.item()}
         return loss, metrics
 
     def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:

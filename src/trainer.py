@@ -1,8 +1,9 @@
 import os
+from models import TrainableModel
 import torch
 import wandb
 from torch.utils.data import DataLoader
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Union, Optional
 from utils import AverageMeter
 
 
@@ -17,7 +18,7 @@ class GenericTrainer:
         self.wb = wb
 
     def setup_optimizer(
-        self, model: torch.nn.Module, opt_config: Dict[str, Any]
+        self, model: TrainableModel, opt_config: Dict[str, Any]
     ) -> torch.optim.Optimizer:
         """Create optimizer based on configuration"""
         assert opt_config["type"] == "AdamW"
@@ -28,7 +29,10 @@ class GenericTrainer:
         )
 
     def train_epoch(
-        self, model, train_loader: DataLoader, optimizer: torch.optim.Optimizer
+        self,
+        model: TrainableModel,
+        train_loader: DataLoader,
+        optimizer: torch.optim.Optimizer,
     ) -> Dict[str, float]:
         """Train for one epoch and return averaged metrics"""
         model.train()
@@ -41,37 +45,65 @@ class GenericTrainer:
             loss.backward()
             optimizer.step()
 
-            # Update metrics with batch size for proper averaging
             batch_size = batch["s"].size(0)
             meter.update(metrics, {key: batch_size for key in metrics.keys()})
 
         return meter.avg
 
-    def log_epoch(self, model, epoch: int, metrics: Dict[str, float]):
+    @torch.inference_mode()
+    def eval_epoch(
+        self, model: TrainableModel, val_loader: DataLoader
+    ) -> Dict[str, float]:
+        """Evaluate for one epoch and return averaged metrics"""
+        model.eval()
+        meter = AverageMeter()
+
+        for batch in val_loader:
+            loss, metrics = model.validation_step(batch, self.device)
+
+            batch_size = batch["s"].size(0)
+            meter.update(metrics, {key: batch_size for key in metrics.keys()})
+
+        return meter.avg
+
+    def _format_metrics(self, metrics: Dict[str, float]) -> str:
+        """Format metrics for console logging"""
+        metric_strs = [f"{k}={v:.4f}" for k, v in metrics.items()]
+        return (
+            f"{', '.join(metric_strs)}"
+            if len(metric_strs) > 1
+            else f"{metric_strs[0]}"
+            if metric_strs
+            else ""
+        )
+
+    def log_epoch(
+        self, model, epoch: int, metrics: Dict[str, float], phase: str = "train"
+    ):
         """Log epoch results to console and wandb"""
         phase_name = model.id
-        metrics_str = model.get_metrics_format(metrics)
+        metrics_str = self._format_metrics(metrics)
 
         # Console logging
-        print(f"[{phase_name.upper()}] Epoch {epoch + 1}: {metrics_str}")
+        if phase == "val":
+            print(f"[{phase_name.upper()}-VAL] Epoch {epoch + 1}: {metrics_str}")
+        else:
+            print(f"[{phase_name.upper()}] Epoch {epoch + 1}: {metrics_str}")
 
         # Wandb logging
         if self.wb is not None:
             wandb_metrics = {f"{phase_name}/{k}": v for k, v in metrics.items()}
             wandb_metrics.update({f"{phase_name}/epoch": epoch + 1})
-            wandb.log(wandb_metrics)
+            commit = phase == "val"
+            wandb.log(wandb_metrics, commit=commit)
 
     def save_checkpoint(self, model) -> list:
         """Save model checkpoint and return path(s)"""
-        # Let the model handle its own saving logic and return info
+        # Save checkpoint locally
         checkpoint_info = model.save_checkpoint(self.cfg["train"]["ckpt_dir"], self.cfg)
-
-        # Extract paths and metadata
-        checkpoint_paths = checkpoint_info["paths"]  # Always a list now
+        checkpoint_paths = checkpoint_info["paths"]
         artifact_name = checkpoint_info["artifact_name"]
         artifact_type = checkpoint_info["artifact_type"]
-
-        # Print confirmation
         for path in checkpoint_paths:
             print(f"Saved {path}")
 
@@ -88,34 +120,27 @@ class GenericTrainer:
         self,
         model,
         train_loader: DataLoader,
+        val_loader: DataLoader,
         num_epochs: int,
-        initial_message: Optional[str] = None,
     ) -> Dict[str, float]:
         """Full training loop"""
-        # Setup
         opt_config = model.get_optimizer_config(self.cfg)
         optimizer = self.setup_optimizer(model, opt_config)
         if self.wb is not None:
             wandb.watch(model, log="all", log_freq=200)
+        final_metrics, train_metrics, val_metrics = {}, {}, {}
 
-        # Print initial message
-        if initial_message:
-            print(initial_message)
-
-        final_metrics = {}
-
-        # Training loop
         for epoch in range(num_epochs):
-            epoch_metrics = self.train_epoch(model, train_loader, optimizer)
-            self.log_epoch(model, epoch, epoch_metrics)
+            train_metrics = self.train_epoch(model, train_loader, optimizer)
+            self.log_epoch(model, epoch, train_metrics, phase="train")
+            val_metrics = self.eval_epoch(model, val_loader)
+            self.log_epoch(model, epoch, val_metrics, phase="val")
 
-            # Store final epoch metrics
-            if epoch == num_epochs - 1:
-                final_metrics = {
-                    f"final_{model.id}_{k}": v for k, v in epoch_metrics.items()
-                }
-
-        # Save checkpoint
+        final_metrics = {
+            f"final_{model.id}_train_{k}": v for k, v in train_metrics.items()
+        }
+        final_metrics.update(
+            {f"final_{model.id}_val_{k}": v for k, v in val_metrics.items()}
+        )
         self.save_checkpoint(model)
-
         return final_metrics

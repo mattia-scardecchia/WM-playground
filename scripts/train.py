@@ -133,7 +133,7 @@ def make_loaders(cfg):
 
 def train_phase1_vae(cfg, device, wb):
     """Refactored VAE training using GenericTrainer"""
-    train_loader, _ = make_loaders(cfg)
+    train_loader, val_loader = make_loaders(cfg)
 
     # Create model and trainer
     model = create_vae(cfg, device)
@@ -145,10 +145,14 @@ def train_phase1_vae(cfg, device, wb):
         f"Batch size: {cfg['train']['batch_size']}; "
         f"Steps per epoch: {len(train_loader)}."
     )
+    print(initial_message)
 
     # Train
     final_metrics = trainer.train(
-        model, train_loader, cfg["train"]["epochs_phase1"], initial_message
+        model,
+        train_loader,
+        val_loader,
+        cfg["train"]["epochs_phase1"],
     )
 
     return os.path.join(cfg["train"]["ckpt_dir"], "enc_vae.pt"), final_metrics
@@ -156,14 +160,16 @@ def train_phase1_vae(cfg, device, wb):
 
 def train_phase1_contrastive(cfg, device, wb):
     """Refactored contrastive training using GenericTrainer"""
-    train_loader, _ = make_loaders(cfg)
+    train_loader, val_loader = make_loaders(cfg)
 
     # Create model and trainer
     model = create_contrastive_trainer(cfg, device)
     trainer = GenericTrainer(cfg, device, wb)
 
     # Train
-    final_metrics = trainer.train(model, train_loader, cfg["train"]["epochs_phase1"])
+    final_metrics = trainer.train(
+        model, train_loader, val_loader, cfg["train"]["epochs_phase1"]
+    )
 
     phi_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt")
     g_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_g.pt")
@@ -173,7 +179,7 @@ def train_phase1_contrastive(cfg, device, wb):
 
 def train_phase2_dynamics(cfg, device, z_space: str, wb):
     """Refactored dynamics training using GenericTrainer"""
-    train_loader, _ = make_loaders(cfg)
+    train_loader, val_loader = make_loaders(cfg)
 
     # Load pre-trained encoder
     encoder_model, z_of = load_encoder(cfg, device, z_space, freeze=True)
@@ -184,7 +190,9 @@ def train_phase2_dynamics(cfg, device, z_space: str, wb):
 
     # Create trainer and train
     trainer = GenericTrainer(cfg, device, wb)
-    final_metrics = trainer.train(model, train_loader, cfg["train"]["epochs_phase2"])
+    final_metrics = trainer.train(
+        model, train_loader, val_loader, cfg["train"]["epochs_phase2"]
+    )
 
     out_path = os.path.join(cfg["train"]["ckpt_dir"], f"dyn_{z_space}.pt")
     return out_path, final_metrics
@@ -192,7 +200,7 @@ def train_phase2_dynamics(cfg, device, z_space: str, wb):
 
 def train_probes(cfg, device, z_space: str, wb):
     """Refactored probe training using GenericTrainer"""
-    train_loader, _ = make_loaders(cfg)
+    train_loader, val_loader = make_loaders(cfg)
 
     # Load pre-trained encoder
     encoder_model, z_of = load_encoder(cfg, device, z_space, freeze=True)
@@ -203,7 +211,9 @@ def train_probes(cfg, device, z_space: str, wb):
 
     # Create trainer and train
     trainer = GenericTrainer(cfg, device, wb)
-    final_metrics = trainer.train(model, train_loader, cfg["train"]["epochs_probe"])
+    final_metrics = trainer.train(
+        model, train_loader, val_loader, cfg["train"]["epochs_probe"]
+    )
 
     out_path = os.path.join(cfg["train"]["ckpt_dir"], f"probe_{z_space}.pt")
     return out_path, final_metrics
