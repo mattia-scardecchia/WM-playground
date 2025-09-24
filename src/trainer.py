@@ -127,7 +127,8 @@ class GenericTrainer:
         opt_config = model.get_optimizer_config(self.cfg)
         optimizer = self.setup_optimizer(model, opt_config)
         if self.wb is not None:
-            wandb.watch(model, log="all", log_freq=200)
+            log_freq = self.cfg["train"]["wandb_log_freq"]
+            wandb.watch(model, log="all", log_freq=log_freq)
         final_metrics, train_metrics, val_metrics = {}, {}, {}
 
         for epoch in range(num_epochs):

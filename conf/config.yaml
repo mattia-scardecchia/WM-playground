@@ -1,0 +1,6 @@
+defaults:
+  - data: base
+  - model: base
+  - train: base
+  - wandb: base
+  - _self_

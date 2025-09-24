@@ -1,6 +1,8 @@
 import os
-import argparse
-import yaml
+from pathlib import Path
+import hydra
+from omegaconf import DictConfig, OmegaConf
+import omegaconf
 import wandb
 import torch
 import torch.nn as nn
@@ -11,12 +13,16 @@ from data import TriplesNPZ
 from models import VAE, NachumModel, DynamicsModel, Probe
 from utils import seed_all
 from trainer import GenericTrainer
+from config_schemas import Config, register_configs
+from generate_data import main as gen_data_main
+from eval import main as eval_main
 
 
-def create_vae(cfg, device):
+def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
     """Create VAE model from config"""
+    D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
     return VAE(
-        cfg["data"]["D"],
+        D,
         cfg["model"]["z_dim_vae"],
         cfg["model"]["enc_widths"],
         cfg["model"]["dec_widths"],
@@ -25,11 +31,13 @@ def create_vae(cfg, device):
     ).to(device)
 
 
-def create_contrastive_trainer(cfg, device):
+def create_contrastive_trainer(cfg: DictConfig, device: torch.device) -> NachumModel:
     """Create ContrastiveTrainer model from config"""
+    D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
     return NachumModel(
-        cfg["data"]["D"],
+        D,
         cfg["model"]["z_dim_contrastive"],
+        cfg["data"]["num_actions"],
         cfg["model"]["enc_widths"],
         cfg["model"]["proj_widths"],
         temperature=cfg["train"]["contrastive"]["temperature"],
@@ -37,35 +45,42 @@ def create_contrastive_trainer(cfg, device):
     ).to(device)
 
 
-def create_dynamics(cfg, device, z_space):
+def create_dynamics(
+    cfg: DictConfig, device: torch.device, z_space: str
+) -> DynamicsModel:
     """Create Dynamics model from config"""
     z_dim = cfg["model"][f"z_dim_{z_space}"]
     return DynamicsModel(
         z_dim,
-        4,  # a_dim
+        cfg["data"]["num_actions"],
         cfg["model"]["dyn_widths"],
         z_space=z_space,
         activation=cfg["model"].get("activation", "relu"),
     ).to(device)
 
 
-def create_probe(cfg, device, z_space):
+def create_probe(cfg: DictConfig, device: torch.device, z_space: str) -> Probe:
     """Create Probe model from config"""
     z_dim = cfg["model"][f"z_dim_{z_space}"]
     return Probe(
         z_dim,
+        cfg["data"]["signal_dim"],
         z_space=z_space,
         widths=cfg["model"]["probe_widths"],
         activation=cfg["model"].get("activation", "relu"),
     ).to(device)
 
 
-def load_encoder(cfg, device, z_space, freeze=True):
+def load_encoder(
+    cfg: DictConfig, device: torch.device, z_space: str, freeze: bool = True
+):
     """Load pre-trained encoder and return model + encoding function"""
     if z_space == "vae":
         model = create_vae(cfg, device)
         ckpt_path = os.path.join(cfg["train"]["ckpt_dir"], "vae.pt")
-        model.load_state_dict(torch.load(ckpt_path, map_location=device)["state_dict"])
+        model.load_state_dict(
+            torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
+        )
 
         def encode_fn(s):
             mu, logvar, z = model.encode(s)
@@ -75,7 +90,7 @@ def load_encoder(cfg, device, z_space, freeze=True):
         model = create_contrastive_trainer(cfg, device)
         ckpt_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt")
         model.phi.load_state_dict(
-            torch.load(ckpt_path, map_location=device)["state_dict"]
+            torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
         )
 
         def encode_fn(s):
@@ -92,18 +107,23 @@ def load_encoder(cfg, device, z_space, freeze=True):
     return model, encode_fn
 
 
-def _maybe_init_wandb(cfg):
-    wcfg = cfg.get("wandb", {})
-    if not wcfg or not wcfg.get("enabled", False):
+def _maybe_init_wandb(cfg: DictConfig):
+    """Initialize wandb if enabled"""
+    if not cfg["wandb"]["enabled"]:
         return None
+
+    config_dict = cfg
+    if isinstance(cfg, omegaconf.dictconfig.DictConfig):
+        config_dict = OmegaConf.to_container(cfg, resolve=True)
+
     run = wandb.init(
-        project=wcfg.get("project", "repr-world"),
-        entity=wcfg.get("entity"),
-        group=wcfg.get("group"),
-        mode=wcfg.get("mode", "online"),
-        dir=wcfg.get("dir", None),
-        tags=wcfg.get("tags", []),
-        config=cfg,
+        project=cfg["wandb"]["project"],
+        entity=cfg["wandb"]["entity"],
+        group=cfg["wandb"]["group"],
+        mode=cfg["wandb"]["mode"],
+        dir=cfg["wandb"]["dir"],
+        tags=cfg["wandb"]["tags"],
+        config=config_dict,
         name=os.environ.get("SLURM_JOB_NAME", None) or None,
         resume="allow",
     )
@@ -131,7 +151,7 @@ def make_loaders(cfg):
     return train, val
 
 
-def train_phase1_vae(cfg, device, wb):
+def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
     """Refactored VAE training using GenericTrainer"""
     train_loader, val_loader = make_loaders(cfg)
 
@@ -158,7 +178,7 @@ def train_phase1_vae(cfg, device, wb):
     return os.path.join(cfg["train"]["ckpt_dir"], "enc_vae.pt"), final_metrics
 
 
-def train_phase1_contrastive(cfg, device, wb):
+def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
     """Refactored contrastive training using GenericTrainer"""
     train_loader, val_loader = make_loaders(cfg)
 
@@ -177,7 +197,7 @@ def train_phase1_contrastive(cfg, device, wb):
     return phi_path, g_path, final_metrics
 
 
-def train_phase2_dynamics(cfg, device, z_space: str, wb):
+def train_phase2_dynamics(cfg: DictConfig, device: torch.device, z_space: str, wb):
     """Refactored dynamics training using GenericTrainer"""
     train_loader, val_loader = make_loaders(cfg)
 
@@ -198,7 +218,7 @@ def train_phase2_dynamics(cfg, device, z_space: str, wb):
     return out_path, final_metrics
 
 
-def train_probes(cfg, device, z_space: str, wb):
+def train_probes(cfg: DictConfig, device: torch.device, z_space: str, wb):
     """Refactored probe training using GenericTrainer"""
     train_loader, val_loader = make_loaders(cfg)
 
@@ -219,39 +239,48 @@ def train_probes(cfg, device, z_space: str, wb):
     return out_path, final_metrics
 
 
-def main(cfg, args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    seed_all(cfg["data"]["seed"])
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    register_configs()
+
+    print("=== Configuration ===")
+    print(OmegaConf.to_yaml(cfg))
+    print("====================")
+
+    device = torch.device(cfg["train"]["device"])
+    seed_all(cfg.data.seed)
     wb = _maybe_init_wandb(cfg)
 
-    if args.phase1:
-        if args.phase1 == "vae":
+    # This allows commands like: python train_hydra.py +gen_data=true +phase1=vae +phase2=vae +train_probes=vae
+    gen_data = cfg.get("gen_data", default_value=False)
+    phase1 = cfg.get("phase1", None)
+    phase2 = cfg.get("phase2", None)
+    train_probes_arg = cfg.get("train_probes", None)
+    eval_arg = cfg.get("eval", None)
+
+    if gen_data:
+        gen_data_main(cfg)
+
+    if phase1:
+        if phase1 == "vae":
             train_phase1_vae(cfg, device, wb)
-        elif args.phase1 == "contrastive":
+        elif phase1 == "contrastive":
             train_phase1_contrastive(cfg, device, wb)
         else:
-            raise ValueError("--phase1 in {vae, contrastive}")
+            raise ValueError("phase1 must be 'vae' or 'contrastive'")
 
-    if args.phase2:
-        train_phase2_dynamics(cfg, device, z_space=args.phase2, wb=wb)
+    if phase2:
+        train_phase2_dynamics(cfg, device, z_space=phase2, wb=wb)
 
-    if args.train_probes:
-        train_probes(cfg, device, z_space=args.train_probes, wb=wb)
+    if train_probes_arg:
+        train_probes(cfg, device, z_space=train_probes_arg, wb=wb)
+
+    if eval_arg:
+        eval_main(cfg, eval_arg, wb)
+
+    if wb is not None:
+        wb.finish()
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=str, default="config.yaml")
-    ap.add_argument("--phase1", type=str, choices=["vae", "contrastive"], default=None)
-    ap.add_argument("--phase2", type=str, choices=["vae", "contrastive"], default=None)
-    ap.add_argument(
-        "--train-probes",
-        dest="train_probes",
-        type=str,
-        choices=["vae", "contrastive"],
-        default=None,
-    )
-    args = ap.parse_args()
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
-    main(cfg, args)
+    main()

@@ -1,0 +1,7 @@
+enabled: true
+project: "repr-world"
+entity: mattia-scardecchia
+group: null
+mode: "online"
+dir: "logs"
+tags: ["toy", "repr"]

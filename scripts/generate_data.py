@@ -7,17 +7,20 @@ from data import NoisyVectorWorld, sample_trajectories
 
 
 def main(cfg):
+    """Generate trajectory data using configuration"""
     out_dir = cfg["data"]["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
+
     env = NoisyVectorWorld(
-        D=cfg["data"]["D"],
         signal_dim=cfg["data"]["signal_dim"],
         noise_dim=cfg["data"]["noise_dim"],
+        num_actions=cfg["data"]["num_actions"],
         step=cfg["data"]["step_size"],
         seed=cfg["data"]["seed"],
     )
 
-    def write_split(name, n_traj):
+    def write_split(name: str, n_traj: int):
+        """Write a data split (train/val/test) to disk"""
         triples = sample_trajectories(
             env, n_traj=n_traj, traj_len=cfg["data"]["traj_len"], policy="random"
         )
@@ -33,9 +36,12 @@ def main(cfg):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=str, default="config.yaml")
+    ap = argparse.ArgumentParser(description="Generate trajectory data")
+    ap.add_argument(
+        "--config", type=str, default="config.yaml", help="Config file path"
+    )
     args = ap.parse_args()
+
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
     main(cfg)

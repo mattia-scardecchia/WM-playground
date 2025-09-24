@@ -1,0 +1,27 @@
+batch_size: 256
+epochs_phase1: 10
+epochs_phase2: 10
+epochs_probe: 10
+num_workers: 0
+ckpt_dir: "ckpts/"
+eval_batch_size: 512
+wandb_log_freq: 200
+device: "mps"
+
+vae:
+  lr: 0.002
+  weight_decay: 0.0
+  beta: 0.001
+
+contrastive:
+  lr: 0.001
+  weight_decay: 0.0
+  temperature: 0.1
+
+dynamics:
+  lr: 0.001
+  weight_decay: 0.0
+
+probe:
+  lr: 0.001
+  weight_decay: 0.0

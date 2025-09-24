@@ -9,7 +9,7 @@ from utils import make_mlp, to_onehot
 
 
 def _unpack_batch(
-    batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int = 4
+    batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Helper function to prepare batch data for dynamics and contrastive models"""
     s = batch["s"].to(device)
@@ -161,18 +161,22 @@ class NachumModel(TrainableModel):
         self,
         x_dim: int,
         z_dim: int,
+        num_actions: int,
         enc_widths,
         proj_widths,
         temperature: float = 0.1,
         activation: str = "relu",
     ):
         super().__init__()
+        self.x_dim = x_dim
+        self.z_dim = z_dim
+        self.num_actions = num_actions
         self.temperature = temperature
         self.phi = nn.Sequential(
             make_mlp([x_dim] + list(enc_widths) + [z_dim], activation)
         )
         self.g = nn.Sequential(
-            make_mlp([x_dim + 4] + list(proj_widths) + [z_dim], activation)  # 4 = a_dim
+            make_mlp([x_dim + num_actions] + list(proj_widths) + [z_dim], activation)
         )
 
     def forward(self, s):
@@ -184,7 +188,11 @@ class NachumModel(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device)
+        s, sp, a, a1h = _unpack_batch(
+            batch,
+            device,
+            self.num_actions,
+        )
 
         z = self.phi(s)  # B, D
         zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
@@ -199,7 +207,7 @@ class NachumModel(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device)
+        s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
 
         z = self.phi(s)  # B, D
         zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
@@ -241,11 +249,18 @@ class NachumModel(TrainableModel):
 
 class DynamicsModel(TrainableModel):
     def __init__(
-        self, z_dim: int, a_dim: int, widths, z_space: str, activation: str = "relu"
+        self,
+        z_dim: int,
+        num_actions: int,
+        widths,
+        z_space: str,
+        activation: str = "relu",
     ):
         super().__init__()
         self.z_space = z_space
-        self.net = make_mlp([z_dim + a_dim] + list(widths) + [z_dim], activation)
+        self.z_dim = z_dim
+        self.num_actions = num_actions
+        self.net = make_mlp([z_dim + num_actions] + list(widths) + [z_dim], activation)
         self.mse = nn.MSELoss()
         self.encoder_fn = None  # Will be set during training setup
 
@@ -259,7 +274,7 @@ class DynamicsModel(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device)
+        s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
 
         with torch.no_grad():
             z = self.encoder_fn(s)
@@ -274,7 +289,7 @@ class DynamicsModel(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device)
+        s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
 
         with torch.no_grad():
             z = self.encoder_fn(s)
@@ -312,9 +327,16 @@ class DynamicsModel(TrainableModel):
 
 class Probe(TrainableModel):
     def __init__(
-        self, z_dim: int, z_space: str, widths=(64, 64), activation: str = "relu"
+        self,
+        z_dim: int,
+        signal_dim: int,
+        z_space: str,
+        widths=(64, 64),
+        activation: str = "relu",
     ):
         super().__init__()
+        self.z_dim = z_dim
+        self.signal_dim = signal_dim
         self.z_space = z_space
         self.net = make_mlp([z_dim] + list(widths) + [2], activation)
         self.mse = nn.MSELoss()
@@ -331,7 +353,7 @@ class Probe(TrainableModel):
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         s = batch["s"].to(device)
-        pos_true = s[:, :2]
+        pos_true = s[:, : self.signal_dim]
 
         with torch.no_grad():
             z = self.encoder_fn(s)
@@ -346,7 +368,7 @@ class Probe(TrainableModel):
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         s = batch["s"].to(device)
-        pos_true = s[:, :2]
+        pos_true = s[:, : self.signal_dim]
 
         with torch.no_grad():
             z = self.encoder_fn(s)

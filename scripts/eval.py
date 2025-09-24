@@ -1,5 +1,8 @@
 import os
 import argparse
+from hydra import initialize_config_dir, compose
+from numpy import sign
+from omegaconf import OmegaConf
 import yaml
 import wandb
 import torch
@@ -10,12 +13,13 @@ from models import VAE, NachumModel, DynamicsModel, Probe
 from utils import seed_all
 
 
-def load_components(cfg, path: str, device):
+def load_components(cfg, zdim: str, device):
     act = cfg["model"].get("activation", "relu")
-    if path == "vae":
+    if zdim == "vae":
         z_dim = cfg["model"]["z_dim_vae"]
+        D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
         vae = VAE(
-            cfg["data"]["D"],
+            D,
             z_dim,
             cfg["model"]["enc_widths"],
             cfg["model"]["dec_widths"],
@@ -24,27 +28,39 @@ def load_components(cfg, path: str, device):
         )
         vae.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "vae.pt"), map_location=device
+                os.path.join(cfg["train"]["ckpt_dir"], "vae.pt"),
+                map_location=device,
+                weights_only=False,
             )["state_dict"]
         )
         vae.to(device).eval()
         dyn = DynamicsModel(
-            z_dim, 4, cfg["model"]["dyn_widths"], z_space="vae", activation=act
+            z_dim,
+            cfg["data"]["num_actions"],
+            cfg["model"]["dyn_widths"],
+            z_space="vae",
+            activation=act,
         )
         dyn.load_state_dict(
             torch.load(
                 os.path.join(cfg["train"]["ckpt_dir"], "dyn_vae.pt"),
                 map_location=device,
+                weights_only=False,
             )["state_dict"]
         )
         dyn.to(device).eval()
         probe = Probe(
-            z_dim, z_space="vae", widths=cfg["model"]["probe_widths"], activation=act
+            z_dim,
+            cfg["data"]["signal_dim"],
+            z_space="vae",
+            widths=cfg["model"]["probe_widths"],
+            activation=act,
         )
         probe.load_state_dict(
             torch.load(
                 os.path.join(cfg["train"]["ckpt_dir"], "probe_vae.pt"),
                 map_location=device,
+                weights_only=False,
             )["state_dict"]
         )
         probe.to(device).eval()
@@ -53,11 +69,13 @@ def load_components(cfg, path: str, device):
             with torch.no_grad():
                 mu, logvar, z = vae.encode(x)
                 return mu
-    elif path == "contrastive":
+    elif zdim == "contrastive":
         z_dim = cfg["model"]["z_dim_contrastive"]
+        D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
         contrastive_model = NachumModel(
-            cfg["data"]["D"],
+            D,
             z_dim,
+            cfg["data"]["num_actions"],
             cfg["model"]["enc_widths"],
             cfg["model"]["proj_widths"],
             temperature=cfg["train"]["contrastive"]["temperature"],
@@ -67,21 +85,28 @@ def load_components(cfg, path: str, device):
             torch.load(
                 os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt"),
                 map_location=device,
+                weights_only=False,
             )["state_dict"]
         )
         contrastive_model.to(device).eval()
         dyn = DynamicsModel(
-            z_dim, 4, cfg["model"]["dyn_widths"], z_space="contrastive", activation=act
+            z_dim,
+            cfg["data"]["num_actions"],
+            cfg["model"]["dyn_widths"],
+            z_space="contrastive",
+            activation=act,
         )
         dyn.load_state_dict(
             torch.load(
                 os.path.join(cfg["train"]["ckpt_dir"], "dyn_contrastive.pt"),
                 map_location=device,
+                weights_only=False,
             )["state_dict"]
         )
         dyn.to(device).eval()
         probe = Probe(
             z_dim,
+            cfg["data"]["signal_dim"],
             z_space="contrastive",
             widths=cfg["model"]["probe_widths"],
             activation=act,
@@ -90,6 +115,7 @@ def load_components(cfg, path: str, device):
             torch.load(
                 os.path.join(cfg["train"]["ckpt_dir"], "probe_contrastive.pt"),
                 map_location=device,
+                weights_only=False,
             )["state_dict"]
         )
         probe.to(device).eval()
@@ -102,65 +128,72 @@ def load_components(cfg, path: str, device):
     return encode, dyn, probe
 
 
-def evaluate(cfg, path: str, device):
+def evaluate(cfg, zdim: str, device):
     dd = cfg["data"]["out_dir"]
+    eval_batch_size = cfg["train"]["eval_batch_size"]
+    num_workers = cfg["train"]["num_workers"]
+
     loader = DataLoader(
         TriplesNPZ(os.path.join(dd, "test.npz")),
-        batch_size=512,
+        batch_size=eval_batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
     )
-    encode, dyn, probe = load_components(cfg, path, device)
+    encode, dyn, probe = load_components(cfg, zdim, device)
     mse_sum = 0.0
     n = 0
     for batch in loader:
         s = batch["s"].to(device)
         a = batch["a"].to(device)
         sp = batch["sp"].to(device)
-        a1h = torch.nn.functional.one_hot(a.long(), num_classes=4).float()
+        a1h = torch.nn.functional.one_hot(
+            a.long(), num_classes=cfg["data"]["num_actions"]
+        ).float()
         with torch.no_grad():
             z = encode(s)
             z_next = dyn(z, a1h)
             pos_pred = probe(z_next)
-            pos_true = sp[:, :2]
+            pos_true = sp[:, : cfg["data"]["signal_dim"]]
             mse = torch.mean((pos_pred - pos_true) ** 2).item()
         mse_sum += mse * s.size(0)
         n += s.size(0)
     final = mse_sum / n
-    print(f"[EVAL-{path}] next-signal MSE = {final:.6f}")
+    print(f"[EVAL-{zdim}] next-signal MSE = {final:.6f}")
     wcfg = cfg.get("wandb", {})
     if wcfg.get("enabled", False):
-        wandb.log({f"eval/{path}_next_signal_mse": final})
+        wandb.log({f"eval/{zdim}_next_signal_mse": final})
     return {"final_eval_loss": final}
 
 
-def main(cfg, args):
+def main(cfg, zdim, wb=None):
     wcfg = cfg.get("wandb", {})
-    wb = None
-    if wcfg.get("enabled", False):
-        wb = wandb.init(
-            project=wcfg.get("project", "repr-world"),
-            entity=wcfg.get("entity"),
-            group=f"eval-{args.path}"
-            if wcfg.get("group") is None
-            else wcfg.get("group"),
-            mode=wcfg.get("mode", "online"),
-            dir=wcfg.get("dir", None),
-            tags=(wcfg.get("tags", []) + ["eval"]),
+    if wcfg["enabled"] and wb is None:
+        wandb.init(
+            project=wcfg["project"],
+            entity=wcfg["entity"],
+            group=f"eval-{zdim}" if wcfg["group"] is None else wcfg["group"],
+            mode=wcfg["mode"],
+            dir=wcfg["dir"],
+            tags=wcfg["tags"] + ["eval"],
             config=cfg,
-            name=f"eval-{args.path}",
+            name=f"eval-{zdim}",
             resume="allow",
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_all(cfg["data"]["seed"])
-    evaluate(cfg, args.path, device)
+    evaluate(cfg, zdim, device)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=str, default="config.yaml")
-    ap.add_argument("--path", type=str, choices=["vae", "contrastive"], required=True)
+
+    config_dir = os.path.abspath("../conf")
+    with initialize_config_dir(config_dir=config_dir, version_base=None):
+        cfg = compose(config_name="config")
+    cfg = OmegaConf.to_container(cfg, resolve=True)
+
+    ap.add_argument("--zdim", type=str, choices=["vae", "contrastive"], required=True)
     args = ap.parse_args()
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
-    main(cfg, args)
+    main(cfg, args.zdim, None)
