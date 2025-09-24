@@ -92,6 +92,7 @@ class TrainingConfig:
     ckpt_dir: str = "ckpts/"
     eval_batch_size: int = 512
     wandb_log_freq: int = 200
+    device: str = "mps"
 
     # Sub-configurations
     vae: VAETrainingConfig = field(default_factory=VAETrainingConfig)

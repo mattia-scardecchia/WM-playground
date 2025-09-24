@@ -1,0 +1,5 @@
+Code:
+- group wandb metrics in a way that allows easy comparison across methods
+Research:
+- static noise
+- jepa

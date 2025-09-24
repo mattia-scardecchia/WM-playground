@@ -3,7 +3,7 @@ epochs_phase1: 10
 epochs_phase2: 10
 epochs_probe: 10
 num_workers: 0
-ckpt_dir: "ckpts/"
+ckpt_dir: "ckpts/" # relative path within hydra output dir
 eval_batch_size: 512
 wandb_log_freq: 200
 device: "mps"

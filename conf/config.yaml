@@ -4,3 +4,5 @@ defaults:
   - train: base
   - wandb: base
   - _self_
+
+model_type: "vae" # "vae" or "contrastive"

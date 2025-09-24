@@ -1,8 +1,5 @@
 import os
 import argparse
-from hydra import initialize_config_dir, compose
-from numpy import sign
-from omegaconf import OmegaConf
 import yaml
 import wandb
 import torch
@@ -13,7 +10,7 @@ from models import VAE, NachumModel, DynamicsModel, Probe
 from utils import seed_all
 
 
-def load_components(cfg, zdim: str, device):
+def load_components(cfg, zdim: str, device, ckpt_dir: str):
     act = cfg["model"].get("activation", "relu")
     if zdim == "vae":
         z_dim = cfg["model"]["z_dim_vae"]
@@ -28,7 +25,7 @@ def load_components(cfg, zdim: str, device):
         )
         vae.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "vae.pt"),
+                os.path.join(ckpt_dir, "vae.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
@@ -43,7 +40,7 @@ def load_components(cfg, zdim: str, device):
         )
         dyn.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "dyn_vae.pt"),
+                os.path.join(ckpt_dir, "dyn_vae.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
@@ -58,7 +55,7 @@ def load_components(cfg, zdim: str, device):
         )
         probe.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "probe_vae.pt"),
+                os.path.join(ckpt_dir, "probe_vae.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
@@ -83,7 +80,7 @@ def load_components(cfg, zdim: str, device):
         )
         contrastive_model.phi.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt"),
+                os.path.join(ckpt_dir, "contrastive_phi.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
@@ -98,7 +95,7 @@ def load_components(cfg, zdim: str, device):
         )
         dyn.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "dyn_contrastive.pt"),
+                os.path.join(ckpt_dir, "dyn_contrastive.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
@@ -113,7 +110,7 @@ def load_components(cfg, zdim: str, device):
         )
         probe.load_state_dict(
             torch.load(
-                os.path.join(cfg["train"]["ckpt_dir"], "probe_contrastive.pt"),
+                os.path.join(ckpt_dir, "probe_contrastive.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
@@ -128,7 +125,7 @@ def load_components(cfg, zdim: str, device):
     return encode, dyn, probe
 
 
-def evaluate(cfg, zdim: str, device):
+def evaluate(cfg, zdim: str, device, ckpt_dir: str):
     dd = cfg["data"]["out_dir"]
     eval_batch_size = cfg["train"]["eval_batch_size"]
     num_workers = cfg["train"]["num_workers"]
@@ -139,7 +136,7 @@ def evaluate(cfg, zdim: str, device):
         shuffle=False,
         num_workers=num_workers,
     )
-    encode, dyn, probe = load_components(cfg, zdim, device)
+    encode, dyn, probe = load_components(cfg, zdim, device, ckpt_dir)
     mse_sum = 0.0
     n = 0
     for batch in loader:
@@ -165,35 +162,60 @@ def evaluate(cfg, zdim: str, device):
     return {"final_eval_loss": final}
 
 
-def main(cfg, zdim, wb=None):
-    wcfg = cfg.get("wandb", {})
+def main(cfg, zdim, wb=None, ckpt_dir=None):
+    if ckpt_dir is None:
+        ckpt_dir = cfg["train"]["ckpt_dir"]
+    wcfg = cfg["wandb"]
     if wcfg["enabled"] and wb is None:
         wandb.init(
             project=wcfg["project"],
             entity=wcfg["entity"],
-            group=f"eval-{zdim}" if wcfg["group"] is None else wcfg["group"],
+            group="eval" if wcfg["group"] is None else wcfg["group"],
             mode=wcfg["mode"],
             dir=wcfg["dir"],
             tags=wcfg["tags"] + ["eval"],
             config=cfg,
-            name=f"eval-{zdim}",
+            name="eval",
             resume="allow",
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_all(cfg["data"]["seed"])
-    evaluate(cfg, zdim, device)
+    evaluate(
+        cfg,
+        zdim,
+        device,
+        ckpt_dir,
+    )
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-
-    config_dir = os.path.abspath("../conf")
-    with initialize_config_dir(config_dir=config_dir, version_base=None):
-        cfg = compose(config_name="config")
-    cfg = OmegaConf.to_container(cfg, resolve=True)
-
-    ap.add_argument("--zdim", type=str, choices=["vae", "contrastive"], required=True)
+    ap = argparse.ArgumentParser(
+        description="Evaluate trained models on test data",
+    )
+    ap.add_argument(
+        "--zdim",
+        type=str,
+        choices=["vae", "contrastive"],
+        required=True,
+        help="Model representation space to evaluate",
+    )
+    ap.add_argument(
+        "--hydra-output-dir",
+        type=str,
+        required=True,
+        help="Path to Hydra output directory containing .hydra/config.yaml",
+    )
     args = ap.parse_args()
-    with open(args.config, "r") as f:
+
+    config_path = os.path.join(args.hydra_output_dir, ".hydra", "config.yaml")
+    with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
-    main(cfg, args.zdim, None)
+    cfg["wandb"]["enabled"] = False  # no wandb for standalone eval
+    print(f"Loaded config from: {config_path}")
+
+    main(
+        cfg=cfg,
+        zdim=args.zdim,
+        wb=None,
+        ckpt_dir=os.path.join(args.hydra_output_dir, "ckpts"),
+    )

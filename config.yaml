@@ -10,7 +10,8 @@ data:
   seed: 0
   out_dir: data/
 
-# Note: the variance of the signal, computed across all timesteps and trajectories, is s^2 * (T+1)/2 if we ignore correlations.
+# Note: the variance of the signal, computed across all timesteps and trajectories, is s^2 * (T+1)/2 if we ignore correlations
+# (assuming we begin in origin).
 
 model:
   z_dim_vae: 2

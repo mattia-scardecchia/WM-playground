@@ -1,20 +1,17 @@
 import os
-from pathlib import Path
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import omegaconf
 import wandb
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from data import TriplesNPZ
+from data import DataManager
 from models import VAE, NachumModel, DynamicsModel, Probe
 from utils import seed_all
 from trainer import GenericTrainer
-from config_schemas import Config, register_configs
-from generate_data import main as gen_data_main
+from config_schemas import register_configs
 from eval import main as eval_main
 
 
@@ -131,24 +128,9 @@ def _maybe_init_wandb(cfg: DictConfig):
 
 
 def make_loaders(cfg):
-    bs = cfg["train"]["batch_size"]
-    nw = cfg["train"]["num_workers"]
-    dd = cfg["data"]["out_dir"]
-    train = DataLoader(
-        TriplesNPZ(os.path.join(dd, "train.npz")),
-        batch_size=bs,
-        shuffle=True,
-        num_workers=nw,
-        pin_memory=True,
-    )
-    val = DataLoader(
-        TriplesNPZ(os.path.join(dd, "val.npz")),
-        batch_size=bs,
-        shuffle=False,
-        num_workers=nw,
-        pin_memory=True,
-    )
-    return train, val
+    """Create data loaders using DataManager for automatic config validation."""
+    data_manager = DataManager(cfg)
+    return data_manager.get_data_loaders()
 
 
 def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
@@ -243,6 +225,11 @@ def train_probes(cfg: DictConfig, device: torch.device, z_space: str, wb):
 def main(cfg: DictConfig) -> None:
     register_configs()
 
+    # Set checkpoint directory to hydra output directory
+    hydra_cfg = HydraConfig.get()
+    hydra_output_dir = hydra_cfg.runtime.output_dir
+    cfg.train.ckpt_dir = os.path.join(hydra_output_dir, "ckpts")
+
     print("=== Configuration ===")
     print(OmegaConf.to_yaml(cfg))
     print("====================")
@@ -251,32 +238,16 @@ def main(cfg: DictConfig) -> None:
     seed_all(cfg.data.seed)
     wb = _maybe_init_wandb(cfg)
 
-    # This allows commands like: python train_hydra.py +gen_data=true +phase1=vae +phase2=vae +train_probes=vae
-    gen_data = cfg.get("gen_data", default_value=False)
-    phase1 = cfg.get("phase1", None)
-    phase2 = cfg.get("phase2", None)
-    train_probes_arg = cfg.get("train_probes", None)
-    eval_arg = cfg.get("eval", None)
+    if cfg.model_type == "vae":
+        train_phase1_vae(cfg, device, wb)
+    elif cfg.model_type == "contrastive":
+        train_phase1_contrastive(cfg, device, wb)
+    else:
+        raise ValueError("model_type must be 'vae' or 'contrastive'")
 
-    if gen_data:
-        gen_data_main(cfg)
-
-    if phase1:
-        if phase1 == "vae":
-            train_phase1_vae(cfg, device, wb)
-        elif phase1 == "contrastive":
-            train_phase1_contrastive(cfg, device, wb)
-        else:
-            raise ValueError("phase1 must be 'vae' or 'contrastive'")
-
-    if phase2:
-        train_phase2_dynamics(cfg, device, z_space=phase2, wb=wb)
-
-    if train_probes_arg:
-        train_probes(cfg, device, z_space=train_probes_arg, wb=wb)
-
-    if eval_arg:
-        eval_main(cfg, eval_arg, wb)
+    train_phase2_dynamics(cfg, device, z_space=cfg.model_type, wb=wb)
+    train_probes(cfg, device, z_space=cfg.model_type, wb=wb)
+    eval_main(cfg, cfg.model_type, wb)
 
     if wb is not None:
         wb.finish()

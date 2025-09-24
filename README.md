@@ -60,4 +60,3 @@ Key parameters in `config.yaml`:
 - `scripts/`: Training and evaluation scripts
 - `notebooks/`: Jupyter notebooks for analysis
 - `data/`: Generated trajectory data
-- `ckpts/`: Saved model checkpoints
