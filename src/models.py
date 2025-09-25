@@ -307,18 +307,18 @@ class DynamicsModel(TrainableModel):
     def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:
         """Save dynamics checkpoint and return info for wandb artifacts"""
         os.makedirs(ckpt_dir, exist_ok=True)
-        ckpt_path = os.path.join(ckpt_dir, f"dyn_{self.z_space}.pt")
+        ckpt_path = os.path.join(ckpt_dir, "dynamics.pt")
         torch.save({"state_dict": self.state_dict(), "cfg": cfg}, ckpt_path)
 
         return {
             "paths": [ckpt_path],
-            "artifact_name": f"dyn-{self.z_space}",
+            "artifact_name": "dynamics",
             "artifact_type": "model",
         }
 
     @property
     def id(self) -> str:
-        return f"dyn-{self.z_space}"
+        return "dynamics"
 
 
 class Probe(TrainableModel):
@@ -385,15 +385,15 @@ class Probe(TrainableModel):
     def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:
         """Save probe checkpoint and return info for wandb artifacts"""
         os.makedirs(ckpt_dir, exist_ok=True)
-        ckpt_path = os.path.join(ckpt_dir, f"probe_{self.z_space}.pt")
+        ckpt_path = os.path.join(ckpt_dir, "probe.pt")
         torch.save({"state_dict": self.state_dict(), "cfg": cfg}, ckpt_path)
 
         return {
             "paths": [ckpt_path],
-            "artifact_name": f"probe-{self.z_space}",
+            "artifact_name": "probe",
             "artifact_type": "model",
         }
 
     @property
     def id(self) -> str:
-        return f"probe-{self.z_space}"
+        return "probe"

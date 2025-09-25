@@ -3,7 +3,7 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Sequence, Optional
 from collections import defaultdict
 
 
@@ -36,19 +36,23 @@ class AverageMeter:
     def __init__(self):
         self.reset()
 
-        self.sums = defaultdict(float)
-        self.counts = defaultdict(int)
-
     def reset(self):
         self.sums = defaultdict(float)
         self.counts = defaultdict(int)
 
-    def update(self, vals: Dict[str, float], ks: Dict[str, int] = None):
-        if ks is None:
-            ks = {k: 1 for k in vals}
+    def update(self, vals: Dict[str, float], weights: Optional[Dict[str, int]] = None):
+        """
+        vals: dictionary mapping metric names to their average values over a batch
+        weights: dictionary mapping metric names to the number of samples they were averaged over. If None,
+        each metric is assumed to be averaged over 1 sample.
+        Updates the running sums and counts for each metric. The purpose of weights is to average correctly when
+        batches have different sizes.
+        """
+        if weights is None:
+            weights = {k: 1 for k in vals}
         for k in vals:
-            self.sums[k] += vals[k] * ks.get(k, 1)
-            self.counts[k] += ks.get(k, 1)
+            self.sums[k] += vals[k] * weights.get(k, 1)
+            self.counts[k] += weights.get(k, 1)
 
     @property
     def avg(self) -> Dict[str, float]:

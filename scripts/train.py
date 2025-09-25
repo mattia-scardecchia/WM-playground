@@ -184,7 +184,7 @@ def train_phase2_dynamics(
         model, train_loader, val_loader, cfg.train.epochs_phase2
     )
 
-    out_path = os.path.join(cfg.train.ckpt_dir, f"dyn_{repr_method}.pt")
+    out_path = os.path.join(cfg.train.ckpt_dir, "dynamics.pt")
     return out_path, final_metrics
 
 
@@ -217,7 +217,7 @@ def train_probes(
         model, train_loader, val_loader, cfg.train.epochs_probe
     )
 
-    out_path = os.path.join(cfg.train.ckpt_dir, f"probe_{repr_method}.pt")
+    out_path = os.path.join(cfg.train.ckpt_dir, "probe.pt")
     return out_path, final_metrics
 
 

@@ -1,5 +1,6 @@
 import os
 import argparse
+import signal
 import yaml
 import wandb
 import torch
@@ -7,8 +8,8 @@ import logging
 from torch.utils.data import DataLoader
 
 from data import TriplesNPZ
-from models import VAE, NachumModel, DynamicsModel, Probe
-from utils import seed_all
+from models import VAE, NachumModel, DynamicsModel, Probe, _unpack_batch
+from utils import seed_all, AverageMeter
 
 
 def load_components(cfg, repr_method: str, device, ckpt_dir: str):
@@ -34,11 +35,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
             )["state_dict"]
         )
         vae.to(device).eval()
-
-        def encode(x):
-            with torch.no_grad():
-                mu, logvar, z = vae.encode(x)
-                return mu
+        encode_fn = vae.get_encoder_fn()
 
     elif repr_method == "contrastive":
         contrastive_cfg = cfg.model.contrastive
@@ -60,10 +57,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
             )["state_dict"]
         )
         contrastive_model.to(device).eval()
-
-        def encode(x):
-            with torch.no_grad():
-                return contrastive_model.phi(x)
+        encode_fn = contrastive_model.get_encoder_fn()
     else:
         raise ValueError(
             f"Unknown repr_method: {repr_method}. Must be 'vae' or 'contrastive'"
@@ -78,7 +72,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
     )
     dyn.load_state_dict(
         torch.load(
-            os.path.join(ckpt_dir, f"dyn_{repr_method}.pt"),
+            os.path.join(ckpt_dir, "dynamics.pt"),
             map_location=device,
             weights_only=False,
         )["state_dict"]
@@ -94,51 +88,80 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
     )
     probe.load_state_dict(
         torch.load(
-            os.path.join(ckpt_dir, f"probe_{repr_method}.pt"),
+            os.path.join(ckpt_dir, "probe.pt"),
             map_location=device,
             weights_only=False,
         )["state_dict"]
     )
     probe.to(device).eval()
 
-    return encode, dyn, probe
+    return encode_fn, dyn, probe
 
 
-def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
+@torch.inference_mode()
+def evaluate(cfg, repr_method: str, device, ckpt_dir: str, split: str = "test"):
     dd = cfg.data.out_dir
     eval_batch_size = cfg.train.eval_batch_size
     num_workers = cfg.train.num_workers
 
     loader = DataLoader(
-        TriplesNPZ(os.path.join(dd, "test.npz")),
+        TriplesNPZ(os.path.join(dd, f"{split}.npz")),
         batch_size=eval_batch_size,
         shuffle=False,
         num_workers=num_workers,
     )
     encode, dyn, probe = load_components(cfg, repr_method, device, ckpt_dir)
-    mse_sum = 0.0
-    n = 0
+
+    meter = AverageMeter()
+    mse = torch.nn.MSELoss()
+
     for batch in loader:
-        s = batch["s"].to(device)
-        a = batch["a"].to(device)
-        sp = batch["sp"].to(device)
-        a1h = torch.nn.functional.one_hot(
-            a.long(), num_classes=cfg.data.num_actions
-        ).float()
+        s, sp, a, a1h = _unpack_batch(batch, device, cfg.data.num_actions)
+        batch_size = s.size(0)
+
         with torch.no_grad():
             z = encode(s)
-            z_next = dyn(z, a1h)
-            pos_pred = probe(z_next)
-            pos_true = sp[:, : cfg.data.signal_dim]
-            mse = torch.mean((pos_pred - pos_true) ** 2).item()
-        mse_sum += mse * s.size(0)
-        n += s.size(0)
-    final = mse_sum / n
-    logging.info(f"[EVAL-{repr_method}] next-signal MSE = {final:.6f}")
+            z_next = encode(sp)
+            z_next_pred = dyn(z, a1h)
+
+            signal_pred = probe(z)
+            signal_true = s[:, : cfg.data.signal_dim]
+            signal_next_pred = probe(z_next_pred)
+            signal_next_true = sp[:, : cfg.data.signal_dim]
+
+            mse_signal_next = mse(signal_next_pred, signal_next_true).item()
+            mse_signal = mse(signal_pred, signal_true).item()
+            mse_znext_znextpred = mse(z_next, z_next_pred).item()
+            mse_z_znext = mse(z, z_next).item()
+
+            z_expanded1 = z.unsqueeze(1)  # [B, 1, D]
+            z_expanded2 = z.unsqueeze(0)  # [1, B, D]
+            pairwise_diffs = z_expanded1 - z_expanded2  # [B, B, D]
+            pairwise_mse = torch.mean(pairwise_diffs**2, dim=2)  # [B, B]
+            mask = ~torch.eye(batch_size, dtype=torch.bool, device=device)
+            inter_batch_mse = torch.mean(pairwise_mse[mask]).item()
+
+            metrics = {
+                "mse_signal_reconstruction": mse_signal,
+                "mse_next_signal_prediction": mse_signal_next,
+                "mse_consecutive_embeddings": mse_z_znext,
+                "mse_unrelated_embeddings": inter_batch_mse,
+                "mse_dynamics_prediction": mse_znext_znextpred,
+            }
+            meter.update(metrics, {k: batch_size for k in metrics})
+
+    final_metrics = meter.avg
+    final_metrics.update(
+        {k.replace("mse", "rmse"): v**0.5 for k, v in final_metrics.items()}
+    )
+    for metric_name, value in final_metrics.items():
+        logging.info(f"[EVAL-{repr_method}] {metric_name} = {value:.4f}")
     wcfg = cfg.get("wandb", {})
     if wcfg.get("enabled", False):
-        wandb.log({f"eval/{repr_method}_next_signal_mse": final})
-    return {"final_eval_loss": final}
+        wandb_metrics = {f"eval/{k}": v for k, v in final_metrics.items()}
+        wandb.log(wandb_metrics)
+
+    return final_metrics
 
 
 def main(cfg, repr_method, wb=None, ckpt_dir=None):
