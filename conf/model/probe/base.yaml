@@ -1,0 +1,2 @@
+probe_widths: [64, 64]
+activation: "relu"

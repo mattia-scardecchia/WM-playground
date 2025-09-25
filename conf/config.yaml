@@ -1,8 +1,14 @@
 defaults:
   - data: base
-  - model: base
+  - model/vae: base
+  - model/contrastive: base
+  - model/dynamics: base
+  - model/probe: base
   - train: base
   - wandb: base
   - _self_
 
-model_type: "vae" # "vae" or "contrastive"
+method: "vae" # "vae" or "contrastive"
+
+model:
+  repr: ${oc.select:model.${method}}

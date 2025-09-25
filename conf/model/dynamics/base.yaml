@@ -1,0 +1,2 @@
+dyn_widths: [256, 256]
+activation: "relu"

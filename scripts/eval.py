@@ -10,122 +10,99 @@ from models import VAE, NachumModel, DynamicsModel, Probe
 from utils import seed_all
 
 
-def load_components(cfg, zdim: str, device, ckpt_dir: str):
-    act = cfg["model"].get("activation", "relu")
-    if zdim == "vae":
-        z_dim = cfg["model"]["z_dim_vae"]
-        D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
+def load_components(cfg, repr_method: str, device, ckpt_dir: str):
+    D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
+
+    if repr_method == "vae":
+        vae_cfg = cfg["model"]["vae"]
+        z_dim = vae_cfg["z_dim"]
         vae = VAE(
             D,
             z_dim,
-            cfg["model"]["enc_widths"],
-            cfg["model"]["dec_widths"],
+            vae_cfg["enc_widths"],
+            vae_cfg["dec_widths"],
             beta=cfg["train"]["vae"]["beta"],
-            activation=act,
+            activation=vae_cfg["activation"],
         )
         vae.load_state_dict(
             torch.load(
-                os.path.join(ckpt_dir, "vae.pt"),
+                os.path.join(ckpt_dir, f"{repr_method}.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
         )
         vae.to(device).eval()
-        dyn = DynamicsModel(
-            z_dim,
-            cfg["data"]["num_actions"],
-            cfg["model"]["dyn_widths"],
-            z_space="vae",
-            activation=act,
-        )
-        dyn.load_state_dict(
-            torch.load(
-                os.path.join(ckpt_dir, "dyn_vae.pt"),
-                map_location=device,
-                weights_only=False,
-            )["state_dict"]
-        )
-        dyn.to(device).eval()
-        probe = Probe(
-            z_dim,
-            cfg["data"]["signal_dim"],
-            z_space="vae",
-            widths=cfg["model"]["probe_widths"],
-            activation=act,
-        )
-        probe.load_state_dict(
-            torch.load(
-                os.path.join(ckpt_dir, "probe_vae.pt"),
-                map_location=device,
-                weights_only=False,
-            )["state_dict"]
-        )
-        probe.to(device).eval()
 
         def encode(x):
             with torch.no_grad():
                 mu, logvar, z = vae.encode(x)
                 return mu
-    elif zdim == "contrastive":
-        z_dim = cfg["model"]["z_dim_contrastive"]
-        D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
+
+    elif repr_method == "contrastive":
+        contrastive_cfg = cfg["model"]["contrastive"]
+        z_dim = contrastive_cfg["z_dim"]
         contrastive_model = NachumModel(
             D,
             z_dim,
             cfg["data"]["num_actions"],
-            cfg["model"]["enc_widths"],
-            cfg["model"]["proj_widths"],
+            contrastive_cfg["enc_widths"],
+            contrastive_cfg["proj_widths"],
             temperature=cfg["train"]["contrastive"]["temperature"],
-            activation=act,
+            activation=contrastive_cfg["activation"],
         )
-        contrastive_model.phi.load_state_dict(
+        contrastive_model.load_state_dict(
             torch.load(
-                os.path.join(ckpt_dir, "contrastive_phi.pt"),
+                os.path.join(ckpt_dir, f"{repr_method}.pt"),
                 map_location=device,
                 weights_only=False,
             )["state_dict"]
         )
         contrastive_model.to(device).eval()
-        dyn = DynamicsModel(
-            z_dim,
-            cfg["data"]["num_actions"],
-            cfg["model"]["dyn_widths"],
-            z_space="contrastive",
-            activation=act,
-        )
-        dyn.load_state_dict(
-            torch.load(
-                os.path.join(ckpt_dir, "dyn_contrastive.pt"),
-                map_location=device,
-                weights_only=False,
-            )["state_dict"]
-        )
-        dyn.to(device).eval()
-        probe = Probe(
-            z_dim,
-            cfg["data"]["signal_dim"],
-            z_space="contrastive",
-            widths=cfg["model"]["probe_widths"],
-            activation=act,
-        )
-        probe.load_state_dict(
-            torch.load(
-                os.path.join(ckpt_dir, "probe_contrastive.pt"),
-                map_location=device,
-                weights_only=False,
-            )["state_dict"]
-        )
-        probe.to(device).eval()
 
         def encode(x):
             with torch.no_grad():
                 return contrastive_model.phi(x)
     else:
-        raise ValueError("--path in {vae, contrastive}")
+        raise ValueError(
+            f"Unknown repr_method: {repr_method}. Must be 'vae' or 'contrastive'"
+        )
+
+    dyn = DynamicsModel(
+        z_dim,
+        cfg["data"]["num_actions"],
+        cfg["model"]["dynamics"]["dyn_widths"],
+        z_space=repr_method,
+        activation=cfg["model"]["dynamics"]["activation"],
+    )
+    dyn.load_state_dict(
+        torch.load(
+            os.path.join(ckpt_dir, f"dyn_{repr_method}.pt"),
+            map_location=device,
+            weights_only=False,
+        )["state_dict"]
+    )
+    dyn.to(device).eval()
+
+    probe = Probe(
+        z_dim,
+        cfg["data"]["signal_dim"],
+        z_space=repr_method,
+        widths=cfg["model"]["probe"]["probe_widths"],
+        activation=cfg["model"]["probe"]["activation"],
+    )
+    probe.load_state_dict(
+        torch.load(
+            os.path.join(ckpt_dir, f"probe_{repr_method}.pt"),
+            map_location=device,
+            weights_only=False,
+        )["state_dict"]
+    )
+    probe.to(device).eval()
+
     return encode, dyn, probe
 
 
-def evaluate(cfg, zdim: str, device, ckpt_dir: str):
+def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
     dd = cfg["data"]["out_dir"]
     eval_batch_size = cfg["train"]["eval_batch_size"]
     num_workers = cfg["train"]["num_workers"]
@@ -136,7 +113,7 @@ def evaluate(cfg, zdim: str, device, ckpt_dir: str):
         shuffle=False,
         num_workers=num_workers,
     )
-    encode, dyn, probe = load_components(cfg, zdim, device, ckpt_dir)
+    encode, dyn, probe = load_components(cfg, repr_method, device, ckpt_dir)
     mse_sum = 0.0
     n = 0
     for batch in loader:
@@ -155,14 +132,14 @@ def evaluate(cfg, zdim: str, device, ckpt_dir: str):
         mse_sum += mse * s.size(0)
         n += s.size(0)
     final = mse_sum / n
-    print(f"[EVAL-{zdim}] next-signal MSE = {final:.6f}")
+    print(f"[EVAL-{repr_method}] next-signal MSE = {final:.6f}")
     wcfg = cfg.get("wandb", {})
     if wcfg.get("enabled", False):
-        wandb.log({f"eval/{zdim}_next_signal_mse": final})
+        wandb.log({f"eval/{repr_method}_next_signal_mse": final})
     return {"final_eval_loss": final}
 
 
-def main(cfg, zdim, wb=None, ckpt_dir=None):
+def main(cfg, repr_method, wb=None, ckpt_dir=None):
     if ckpt_dir is None:
         ckpt_dir = cfg["train"]["ckpt_dir"]
     wcfg = cfg["wandb"]
@@ -182,7 +159,7 @@ def main(cfg, zdim, wb=None, ckpt_dir=None):
     seed_all(cfg["data"]["seed"])
     evaluate(
         cfg,
-        zdim,
+        repr_method,
         device,
         ckpt_dir,
     )
@@ -215,7 +192,7 @@ if __name__ == "__main__":
 
     main(
         cfg=cfg,
-        zdim=args.zdim,
+        repr_method=args.zdim,
         wb=None,
         ckpt_dir=os.path.join(args.hydra_output_dir, "ckpts"),
     )

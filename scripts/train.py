@@ -1,3 +1,5 @@
+import logging
+from math import log
 import os
 import hydra
 from hydra.core.hydra_config import HydraConfig
@@ -6,39 +8,41 @@ import omegaconf
 import wandb
 import torch
 import torch.nn.functional as F
+from typing import Optional
 
 from data import DataManager
 from models import VAE, NachumModel, DynamicsModel, Probe
 from utils import seed_all
 from trainer import GenericTrainer
-from config_schemas import register_configs
 from eval import main as eval_main
 
 
 def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
     """Create VAE model from config"""
     D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
+    vae_cfg = cfg["model"]["vae"]
     return VAE(
         D,
-        cfg["model"]["z_dim_vae"],
-        cfg["model"]["enc_widths"],
-        cfg["model"]["dec_widths"],
+        vae_cfg["z_dim"],
+        vae_cfg["enc_widths"],
+        vae_cfg["dec_widths"],
         beta=cfg["train"]["vae"]["beta"],
-        activation=cfg["model"].get("activation", "relu"),
+        activation=vae_cfg["activation"],
     ).to(device)
 
 
 def create_contrastive_trainer(cfg: DictConfig, device: torch.device) -> NachumModel:
     """Create ContrastiveTrainer model from config"""
     D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
+    contrastive_cfg = cfg["model"]["contrastive"]
     return NachumModel(
         D,
-        cfg["model"]["z_dim_contrastive"],
+        contrastive_cfg["z_dim"],
         cfg["data"]["num_actions"],
-        cfg["model"]["enc_widths"],
-        cfg["model"]["proj_widths"],
+        contrastive_cfg["enc_widths"],
+        contrastive_cfg["proj_widths"],
         temperature=cfg["train"]["contrastive"]["temperature"],
-        activation=cfg["model"].get("activation", "relu"),
+        activation=contrastive_cfg["activation"],
     ).to(device)
 
 
@@ -46,62 +50,49 @@ def create_dynamics(
     cfg: DictConfig, device: torch.device, z_space: str
 ) -> DynamicsModel:
     """Create Dynamics model from config"""
-    z_dim = cfg["model"][f"z_dim_{z_space}"]
+    z_dim = cfg["model"]["repr"]["z_dim"]
+    dynamics_cfg = cfg["model"]["dynamics"]
     return DynamicsModel(
         z_dim,
         cfg["data"]["num_actions"],
-        cfg["model"]["dyn_widths"],
+        dynamics_cfg["dyn_widths"],
         z_space=z_space,
-        activation=cfg["model"].get("activation", "relu"),
+        activation=dynamics_cfg["activation"],
     ).to(device)
 
 
 def create_probe(cfg: DictConfig, device: torch.device, z_space: str) -> Probe:
     """Create Probe model from config"""
-    z_dim = cfg["model"][f"z_dim_{z_space}"]
+    z_dim = cfg["model"]["repr"]["z_dim"]
+    probe_cfg = cfg["model"]["probe"]
     return Probe(
         z_dim,
         cfg["data"]["signal_dim"],
         z_space=z_space,
-        widths=cfg["model"]["probe_widths"],
-        activation=cfg["model"].get("activation", "relu"),
+        widths=probe_cfg["probe_widths"],
+        activation=probe_cfg["activation"],
     ).to(device)
 
 
 def load_encoder(
-    cfg: DictConfig, device: torch.device, z_space: str, freeze: bool = True
+    cfg: DictConfig,
+    device: torch.device,
+    repr_method: str,
+    freeze: bool,
+    ckpt_path: str,
 ):
     """Load pre-trained encoder and return model + encoding function"""
-    if z_space == "vae":
-        model = create_vae(cfg, device)
-        ckpt_path = os.path.join(cfg["train"]["ckpt_dir"], "vae.pt")
-        model.load_state_dict(
-            torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
-        )
-
-        def encode_fn(s):
-            mu, logvar, z = model.encode(s)
-            return mu
-
-    elif z_space == "contrastive":
-        model = create_contrastive_trainer(cfg, device)
-        ckpt_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt")
-        model.phi.load_state_dict(
-            torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
-        )
-
-        def encode_fn(s):
-            return model.phi(s)
-
-    else:
-        raise ValueError("z_space must be 'vae' or 'contrastive'")
-
+    factory_fn = create_vae if repr_method == "vae" else create_contrastive_trainer
+    model = factory_fn(cfg, device)
+    model.load_state_dict(
+        torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
+    )
     model.eval()
     if freeze:
         for p in model.parameters():
             p.requires_grad = False
 
-    return model, encode_fn
+    return model
 
 
 def _maybe_init_wandb(cfg: DictConfig):
@@ -127,29 +118,12 @@ def _maybe_init_wandb(cfg: DictConfig):
     return run
 
 
-def make_loaders(cfg):
-    """Create data loaders using DataManager for automatic config validation."""
-    data_manager = DataManager(cfg)
-    return data_manager.get_data_loaders()
-
-
 def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
-    """Refactored VAE training using GenericTrainer"""
-    train_loader, val_loader = make_loaders(cfg)
-
-    # Create model and trainer
+    """VAE training using GenericTrainer"""
+    train_loader, val_loader = DataManager(cfg).get_data_loaders()
     model = create_vae(cfg, device)
     trainer = GenericTrainer(cfg, device, wb)
 
-    # Training message
-    initial_message = (
-        f"Training VAE. Epochs: {cfg['train']['epochs_phase1']}; "
-        f"Batch size: {cfg['train']['batch_size']}; "
-        f"Steps per epoch: {len(train_loader)}."
-    )
-    print(initial_message)
-
-    # Train
     final_metrics = trainer.train(
         model,
         train_loader,
@@ -161,16 +135,16 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
 
 
 def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
-    """Refactored contrastive training using GenericTrainer"""
-    train_loader, val_loader = make_loaders(cfg)
-
-    # Create model and trainer
+    """Contrastive training using GenericTrainer"""
+    train_loader, val_loader = DataManager(cfg).get_data_loaders()
     model = create_contrastive_trainer(cfg, device)
     trainer = GenericTrainer(cfg, device, wb)
 
-    # Train
     final_metrics = trainer.train(
-        model, train_loader, val_loader, cfg["train"]["epochs_phase1"]
+        model,
+        train_loader,
+        val_loader,
+        cfg["train"]["epochs_phase1"],
     )
 
     phi_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt")
@@ -179,52 +153,73 @@ def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
     return phi_path, g_path, final_metrics
 
 
-def train_phase2_dynamics(cfg: DictConfig, device: torch.device, z_space: str, wb):
-    """Refactored dynamics training using GenericTrainer"""
-    train_loader, val_loader = make_loaders(cfg)
+def train_phase2_dynamics(
+    cfg: DictConfig, device: torch.device, repr_method: str, wb, ckpt_dir: str
+):
+    """Dynamics training using GenericTrainer"""
+    train_loader, val_loader = DataManager(cfg).get_data_loaders()
+    if ckpt_dir is None:
+        ckpt_dir = cfg["train"]["ckpt_dir"]
+    ckpt_path = os.path.join(
+        ckpt_dir,
+        f"{repr_method}.pt",
+    )
+    logging.info(f"Loading encoder from {ckpt_path} for dynamics training")
+    encoder_model = load_encoder(
+        cfg,
+        device,
+        repr_method,
+        freeze=True,
+        ckpt_path=ckpt_path,
+    )
+    encoder_fn = encoder_model.get_encoder_fn()
 
-    # Load pre-trained encoder
-    encoder_model, z_of = load_encoder(cfg, device, z_space, freeze=True)
-
-    # Create dynamics model and set encoder
-    model = create_dynamics(cfg, device, z_space)
-    model.set_encoder(z_of)
-
-    # Create trainer and train
+    model = create_dynamics(cfg, device, repr_method)
+    model.set_encoder(encoder_fn)
     trainer = GenericTrainer(cfg, device, wb)
     final_metrics = trainer.train(
         model, train_loader, val_loader, cfg["train"]["epochs_phase2"]
     )
 
-    out_path = os.path.join(cfg["train"]["ckpt_dir"], f"dyn_{z_space}.pt")
+    out_path = os.path.join(cfg["train"]["ckpt_dir"], f"dyn_{repr_method}.pt")
     return out_path, final_metrics
 
 
-def train_probes(cfg: DictConfig, device: torch.device, z_space: str, wb):
+def train_probes(
+    cfg: DictConfig, device: torch.device, repr_method: str, wb, ckpt_dir: str
+):
     """Refactored probe training using GenericTrainer"""
-    train_loader, val_loader = make_loaders(cfg)
+    train_loader, val_loader = DataManager(cfg).get_data_loaders()
 
-    # Load pre-trained encoder
-    encoder_model, z_of = load_encoder(cfg, device, z_space, freeze=True)
+    if ckpt_dir is None:
+        ckpt_dir = cfg["train"]["ckpt_dir"]
+    ckpt_path = os.path.join(
+        ckpt_dir,
+        f"{repr_method}.pt",
+    )
+    logging.info(f"Loading encoder from {ckpt_path} for probe training")
+    encoder_model = load_encoder(
+        cfg,
+        device,
+        repr_method,
+        freeze=True,
+        ckpt_path=ckpt_path,
+    )
+    encoder_fn = encoder_model.get_encoder_fn()
 
-    # Create probe model and set encoder
-    model = create_probe(cfg, device, z_space)
-    model.set_encoder(z_of)
-
-    # Create trainer and train
+    model = create_probe(cfg, device, repr_method)
+    model.set_encoder(encoder_fn)
     trainer = GenericTrainer(cfg, device, wb)
     final_metrics = trainer.train(
         model, train_loader, val_loader, cfg["train"]["epochs_probe"]
     )
 
-    out_path = os.path.join(cfg["train"]["ckpt_dir"], f"probe_{z_space}.pt")
+    out_path = os.path.join(cfg["train"]["ckpt_dir"], f"probe_{repr_method}.pt")
     return out_path, final_metrics
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    register_configs()
-
     # Set checkpoint directory to hydra output directory
     hydra_cfg = HydraConfig.get()
     hydra_output_dir = hydra_cfg.runtime.output_dir
@@ -238,16 +233,16 @@ def main(cfg: DictConfig) -> None:
     seed_all(cfg.data.seed)
     wb = _maybe_init_wandb(cfg)
 
-    if cfg.model_type == "vae":
+    if cfg.method == "vae":
         train_phase1_vae(cfg, device, wb)
-    elif cfg.model_type == "contrastive":
+    elif cfg.method == "contrastive":
         train_phase1_contrastive(cfg, device, wb)
     else:
-        raise ValueError("model_type must be 'vae' or 'contrastive'")
+        raise ValueError("method must be 'vae' or 'contrastive'")
 
-    train_phase2_dynamics(cfg, device, z_space=cfg.model_type, wb=wb)
-    train_probes(cfg, device, z_space=cfg.model_type, wb=wb)
-    eval_main(cfg, cfg.model_type, wb)
+    train_phase2_dynamics(cfg, device, repr_method=cfg.method, wb=wb, ckpt_dir=None)
+    train_probes(cfg, device, repr_method=cfg.method, wb=wb, ckpt_dir=None)
+    eval_main(cfg, cfg.method, wb)
 
     if wb is not None:
         wb.finish()

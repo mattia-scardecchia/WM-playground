@@ -1,8 +1,0 @@
-z_dim_vae: 2
-z_dim_contrastive: 2
-enc_widths: [256, 256]
-dec_widths: [256, 256]
-proj_widths: [256, 256]
-dyn_widths: [256, 256]
-probe_widths: [64, 64]
-activation: "relu"

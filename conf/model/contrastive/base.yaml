@@ -1,0 +1,4 @@
+z_dim: 2
+enc_widths: [256, 256]
+proj_widths: [256, 256]
+activation: "relu"

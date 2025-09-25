@@ -1,4 +1,4 @@
-from typing import Sequence, Dict, Any, Tuple, Optional, Union
+from typing import Callable, Sequence, Dict, Any, Tuple, Optional, Union
 import os
 import torch
 import torch.nn as nn
@@ -47,13 +47,21 @@ class TrainableModel(nn.Module, ABC):
         """Return optimizer configuration for this model"""
         pass
 
-    @abstractmethod
     def save_checkpoint(self, ckpt_dir: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         """
         Save model checkpoint(s) and return info for wandb artifacts
         Returns: {"paths": list, "artifact_name": str, "artifact_type": str}
         """
-        pass
+        os.makedirs(ckpt_dir, exist_ok=True)
+        filename = f"{self.id}.pt"
+        path = os.path.join(ckpt_dir, filename)
+        torch.save({"state_dict": self.state_dict(), "cfg": cfg}, path)
+
+        return {
+            "paths": [path],
+            "artifact_name": f"{self.id}-model",
+            "artifact_type": "model",
+        }
 
     @property
     @abstractmethod
@@ -138,22 +146,18 @@ class VAE(TrainableModel):
             "weight_decay": cfg["train"]["vae"]["weight_decay"],
         }
 
-    def save_checkpoint(self, ckpt_dir: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
-        """Save VAE checkpoint and return info for wandb artifacts"""
-        os.makedirs(ckpt_dir, exist_ok=True)
-        filename = f"{self.id}.pt"
-        path = os.path.join(ckpt_dir, filename)
-        torch.save({"state_dict": self.state_dict(), "cfg": cfg}, path)
-
-        return {
-            "paths": [path],
-            "artifact_name": f"{self.id}-model",
-            "artifact_type": "model",
-        }
-
     @property
     def id(self) -> str:
         return "vae"
+
+    def get_encoder_fn(self):
+        """Return a function that encodes input states to latent representations"""
+
+        def encode_fn(x):
+            mu, logvar, z = self.encode(x)
+            return mu
+
+        return encode_fn
 
 
 class NachumModel(TrainableModel):
@@ -226,25 +230,17 @@ class NachumModel(TrainableModel):
             "weight_decay": cfg["train"]["contrastive"]["weight_decay"],
         }
 
-    def save_checkpoint(self, ckpt_dir: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
-        """Save contrastive model checkpoint and return info for wandb artifacts"""
-        os.makedirs(ckpt_dir, exist_ok=True)
-
-        phi_path = os.path.join(ckpt_dir, "contrastive_phi.pt")
-        g_path = os.path.join(ckpt_dir, "contrastive_g.pt")
-
-        torch.save({"state_dict": self.phi.state_dict(), "cfg": cfg}, phi_path)
-        torch.save({"state_dict": self.g.state_dict(), "cfg": cfg}, g_path)
-
-        return {
-            "paths": [phi_path, g_path],
-            "artifact_name": "contrastive-encoders",
-            "artifact_type": "model",
-        }
-
     @property
     def id(self) -> str:
         return "contrastive"
+
+    def get_encoder_fn(self):
+        """Return a function that encodes input states to latent representations"""
+
+        def encode_fn(x):
+            return self.phi(x)
+
+        return encode_fn
 
 
 class DynamicsModel(TrainableModel):
@@ -277,8 +273,8 @@ class DynamicsModel(TrainableModel):
         s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
 
         with torch.no_grad():
-            z = self.encoder_fn(s)
-            z_next_true = self.encoder_fn(sp)
+            z = self.encoder_fn(s)  # type: ignore
+            z_next_true = self.encoder_fn(sp)  # type: ignore
 
         z_next_pred = self(z, a1h)
         loss = self.mse(z_next_pred, z_next_true)
@@ -292,8 +288,8 @@ class DynamicsModel(TrainableModel):
         s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
 
         with torch.no_grad():
-            z = self.encoder_fn(s)
-            z_next_true = self.encoder_fn(sp)
+            z = self.encoder_fn(s)  # type: ignore
+            z_next_true = self.encoder_fn(sp)  # type: ignore
 
         z_next_pred = self(z, a1h)
         loss = self.mse(z_next_pred, z_next_true)
@@ -356,7 +352,7 @@ class Probe(TrainableModel):
         pos_true = s[:, : self.signal_dim]
 
         with torch.no_grad():
-            z = self.encoder_fn(s)
+            z = self.encoder_fn(s)  # type: ignore
 
         pos_pred = self(z)
         loss = self.mse(pos_pred, pos_true)
@@ -371,7 +367,7 @@ class Probe(TrainableModel):
         pos_true = s[:, : self.signal_dim]
 
         with torch.no_grad():
-            z = self.encoder_fn(s)
+            z = self.encoder_fn(s)  # type: ignore
 
         pos_pred = self(z)
         loss = self.mse(pos_pred, pos_true)

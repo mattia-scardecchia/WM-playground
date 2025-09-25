@@ -1,5 +1,7 @@
 Code:
 - group wandb metrics in a way that allows easy comparison across methods
+- check hydra config in Code
+- use dot notation hydra
 Research:
 - static noise
 - jepa

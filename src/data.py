@@ -23,6 +23,7 @@ class NoisyVectorWorld:
         num_actions: int = 4,
         step: float = 1.0,
         seed: int = 0,
+        static_noise: bool = False,
     ):
         assert signal_dim == 2
 
@@ -31,6 +32,7 @@ class NoisyVectorWorld:
         self.noise_dim = noise_dim
         self.num_actions = num_actions
         self.step_size = float(step)
+        self.static_noise = static_noise
         self.rng = np.random.RandomState(seed)
 
     def init_state(self, N: int) -> np.ndarray:
@@ -39,7 +41,6 @@ class NoisyVectorWorld:
         return np.concatenate([signal, noise], axis=1)
 
     def step(self, s: np.ndarray, a: np.ndarray) -> np.ndarray:
-        s = s.copy()
         pos = s[:, : self.signal_dim].copy()
         dx = np.zeros_like(pos)
         dx[:, 0] += (a == 0) * self.step_size
@@ -47,7 +48,10 @@ class NoisyVectorWorld:
         dx[:, 1] += (a == 2) * self.step_size
         dx[:, 1] += (a == 3) * (-self.step_size)
         pos_next = pos + dx
-        noise_next = self.rng.randn(s.shape[0], self.noise_dim)
+        if self.static_noise:
+            noise_next = s[:, self.signal_dim :].copy()
+        else:
+            noise_next = self.rng.randn(s.shape[0], self.noise_dim)
         sp = np.concatenate([pos_next, noise_next], axis=1)
         return sp
 
@@ -188,6 +192,7 @@ class DataManager:
             num_actions=self.cfg.data.num_actions,
             step=self.cfg.data.step_size,
             seed=self.cfg.data.seed,
+            static_noise=self.cfg.data.static_noise,
         )
 
         # Generate data splits
