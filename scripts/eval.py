@@ -11,18 +11,18 @@ from utils import seed_all
 
 
 def load_components(cfg, repr_method: str, device, ckpt_dir: str):
-    D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
+    D = cfg.data.signal_dim + cfg.data.noise_dim
 
     if repr_method == "vae":
-        vae_cfg = cfg["model"]["vae"]
-        z_dim = vae_cfg["z_dim"]
+        vae_cfg = cfg.model.vae
+        z_dim = vae_cfg.z_dim
         vae = VAE(
             D,
             z_dim,
-            vae_cfg["enc_widths"],
-            vae_cfg["dec_widths"],
-            beta=cfg["train"]["vae"]["beta"],
-            activation=vae_cfg["activation"],
+            vae_cfg.enc_widths,
+            vae_cfg.dec_widths,
+            beta=cfg.train.vae.beta,
+            activation=vae_cfg.activation,
         )
         vae.load_state_dict(
             torch.load(
@@ -39,16 +39,16 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
                 return mu
 
     elif repr_method == "contrastive":
-        contrastive_cfg = cfg["model"]["contrastive"]
-        z_dim = contrastive_cfg["z_dim"]
+        contrastive_cfg = cfg.model.contrastive
+        z_dim = contrastive_cfg.z_dim
         contrastive_model = NachumModel(
             D,
             z_dim,
-            cfg["data"]["num_actions"],
-            contrastive_cfg["enc_widths"],
-            contrastive_cfg["proj_widths"],
-            temperature=cfg["train"]["contrastive"]["temperature"],
-            activation=contrastive_cfg["activation"],
+            cfg.data.num_actions,
+            contrastive_cfg.enc_widths,
+            contrastive_cfg.proj_widths,
+            temperature=cfg.train.contrastive.temperature,
+            activation=contrastive_cfg.activation,
         )
         contrastive_model.load_state_dict(
             torch.load(
@@ -69,10 +69,10 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
 
     dyn = DynamicsModel(
         z_dim,
-        cfg["data"]["num_actions"],
-        cfg["model"]["dynamics"]["dyn_widths"],
+        cfg.data.num_actions,
+        cfg.model.dynamics.dyn_widths,
         z_space=repr_method,
-        activation=cfg["model"]["dynamics"]["activation"],
+        activation=cfg.model.dynamics.activation,
     )
     dyn.load_state_dict(
         torch.load(
@@ -85,10 +85,10 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
 
     probe = Probe(
         z_dim,
-        cfg["data"]["signal_dim"],
+        cfg.data.signal_dim,
         z_space=repr_method,
-        widths=cfg["model"]["probe"]["probe_widths"],
-        activation=cfg["model"]["probe"]["activation"],
+        widths=cfg.model.probe.probe_widths,
+        activation=cfg.model.probe.activation,
     )
     probe.load_state_dict(
         torch.load(
@@ -103,9 +103,9 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
 
 
 def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
-    dd = cfg["data"]["out_dir"]
-    eval_batch_size = cfg["train"]["eval_batch_size"]
-    num_workers = cfg["train"]["num_workers"]
+    dd = cfg.data.out_dir
+    eval_batch_size = cfg.train.eval_batch_size
+    num_workers = cfg.train.num_workers
 
     loader = DataLoader(
         TriplesNPZ(os.path.join(dd, "test.npz")),
@@ -121,13 +121,13 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
         a = batch["a"].to(device)
         sp = batch["sp"].to(device)
         a1h = torch.nn.functional.one_hot(
-            a.long(), num_classes=cfg["data"]["num_actions"]
+            a.long(), num_classes=cfg.data.num_actions
         ).float()
         with torch.no_grad():
             z = encode(s)
             z_next = dyn(z, a1h)
             pos_pred = probe(z_next)
-            pos_true = sp[:, : cfg["data"]["signal_dim"]]
+            pos_true = sp[:, : cfg.data.signal_dim]
             mse = torch.mean((pos_pred - pos_true) ** 2).item()
         mse_sum += mse * s.size(0)
         n += s.size(0)
@@ -141,22 +141,22 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
 
 def main(cfg, repr_method, wb=None, ckpt_dir=None):
     if ckpt_dir is None:
-        ckpt_dir = cfg["train"]["ckpt_dir"]
-    wcfg = cfg["wandb"]
-    if wcfg["enabled"] and wb is None:
+        ckpt_dir = cfg.train.ckpt_dir
+    wcfg = cfg.wandb
+    if wcfg.enabled and wb is None:
         wandb.init(
-            project=wcfg["project"],
-            entity=wcfg["entity"],
-            group="eval" if wcfg["group"] is None else wcfg["group"],
-            mode=wcfg["mode"],
-            dir=wcfg["dir"],
-            tags=wcfg["tags"] + ["eval"],
+            project=wcfg.project,
+            entity=wcfg.entity,
+            group="eval" if wcfg.group is None else wcfg.group,
+            mode=wcfg.mode,
+            dir=wcfg.dir,
+            tags=wcfg.tags + ["eval"],
             config=cfg,
             name="eval",
             resume="allow",
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    seed_all(cfg["data"]["seed"])
+    seed_all(cfg.data.seed)
     evaluate(
         cfg,
         repr_method,

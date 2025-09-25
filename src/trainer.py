@@ -10,9 +10,7 @@ from utils import AverageMeter
 class GenericTrainer:
     """Generic trainer that works with any TrainableModel"""
 
-    def __init__(
-        self, cfg: Dict[str, Any], device: torch.device, wb: Optional[Any] = None
-    ):
+    def __init__(self, cfg: Any, device: torch.device, wb: Optional[Any] = None):
         self.cfg = cfg
         self.device = device
         self.wb = wb
@@ -100,7 +98,7 @@ class GenericTrainer:
     def save_checkpoint(self, model) -> list:
         """Save model checkpoint and return path(s)"""
         # Save checkpoint locally
-        checkpoint_info = model.save_checkpoint(self.cfg["train"]["ckpt_dir"], self.cfg)
+        checkpoint_info = model.save_checkpoint(self.cfg.train.ckpt_dir, self.cfg)
         checkpoint_paths = checkpoint_info["paths"]
         artifact_name = checkpoint_info["artifact_name"]
         artifact_type = checkpoint_info["artifact_type"]
@@ -127,7 +125,7 @@ class GenericTrainer:
         opt_config = model.get_optimizer_config(self.cfg)
         optimizer = self.setup_optimizer(model, opt_config)
         if self.wb is not None:
-            log_freq = self.cfg["train"]["wandb_log_freq"]
+            log_freq = self.cfg.train.wandb_log_freq
             wandb.watch(model, log="all", log_freq=log_freq)
         final_metrics, train_metrics, val_metrics = {}, {}, {}
 

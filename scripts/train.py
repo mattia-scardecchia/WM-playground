@@ -19,30 +19,30 @@ from eval import main as eval_main
 
 def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
     """Create VAE model from config"""
-    D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
-    vae_cfg = cfg["model"]["vae"]
+    D = cfg.data.signal_dim + cfg.data.noise_dim
+    vae_cfg = cfg.model.vae
     return VAE(
         D,
-        vae_cfg["z_dim"],
-        vae_cfg["enc_widths"],
-        vae_cfg["dec_widths"],
-        beta=cfg["train"]["vae"]["beta"],
-        activation=vae_cfg["activation"],
+        vae_cfg.z_dim,
+        vae_cfg.enc_widths,
+        vae_cfg.dec_widths,
+        beta=cfg.train.vae.beta,
+        activation=vae_cfg.activation,
     ).to(device)
 
 
 def create_contrastive_trainer(cfg: DictConfig, device: torch.device) -> NachumModel:
     """Create ContrastiveTrainer model from config"""
-    D = cfg["data"]["signal_dim"] + cfg["data"]["noise_dim"]
-    contrastive_cfg = cfg["model"]["contrastive"]
+    D = cfg.data.signal_dim + cfg.data.noise_dim
+    contrastive_cfg = cfg.model.contrastive
     return NachumModel(
         D,
-        contrastive_cfg["z_dim"],
-        cfg["data"]["num_actions"],
-        contrastive_cfg["enc_widths"],
-        contrastive_cfg["proj_widths"],
-        temperature=cfg["train"]["contrastive"]["temperature"],
-        activation=contrastive_cfg["activation"],
+        contrastive_cfg.z_dim,
+        cfg.data.num_actions,
+        contrastive_cfg.enc_widths,
+        contrastive_cfg.proj_widths,
+        temperature=cfg.train.contrastive.temperature,
+        activation=contrastive_cfg.activation,
     ).to(device)
 
 
@@ -50,27 +50,27 @@ def create_dynamics(
     cfg: DictConfig, device: torch.device, z_space: str
 ) -> DynamicsModel:
     """Create Dynamics model from config"""
-    z_dim = cfg["model"]["repr"]["z_dim"]
-    dynamics_cfg = cfg["model"]["dynamics"]
+    z_dim = cfg.model.repr.z_dim
+    dynamics_cfg = cfg.model.dynamics
     return DynamicsModel(
         z_dim,
-        cfg["data"]["num_actions"],
-        dynamics_cfg["dyn_widths"],
+        cfg.data.num_actions,
+        dynamics_cfg.dyn_widths,
         z_space=z_space,
-        activation=dynamics_cfg["activation"],
+        activation=dynamics_cfg.activation,
     ).to(device)
 
 
 def create_probe(cfg: DictConfig, device: torch.device, z_space: str) -> Probe:
     """Create Probe model from config"""
-    z_dim = cfg["model"]["repr"]["z_dim"]
-    probe_cfg = cfg["model"]["probe"]
+    z_dim = cfg.model.repr.z_dim
+    probe_cfg = cfg.model.probe
     return Probe(
         z_dim,
-        cfg["data"]["signal_dim"],
+        cfg.data.signal_dim,
         z_space=z_space,
-        widths=probe_cfg["probe_widths"],
-        activation=probe_cfg["activation"],
+        widths=probe_cfg.probe_widths,
+        activation=probe_cfg.activation,
     ).to(device)
 
 
@@ -97,7 +97,7 @@ def load_encoder(
 
 def _maybe_init_wandb(cfg: DictConfig):
     """Initialize wandb if enabled"""
-    if not cfg["wandb"]["enabled"]:
+    if not cfg.wandb.enabled:
         return None
 
     config_dict = cfg
@@ -105,12 +105,12 @@ def _maybe_init_wandb(cfg: DictConfig):
         config_dict = OmegaConf.to_container(cfg, resolve=True)
 
     run = wandb.init(
-        project=cfg["wandb"]["project"],
-        entity=cfg["wandb"]["entity"],
-        group=cfg["wandb"]["group"],
-        mode=cfg["wandb"]["mode"],
-        dir=cfg["wandb"]["dir"],
-        tags=cfg["wandb"]["tags"],
+        project=cfg.wandb.project,
+        entity=cfg.wandb.entity,
+        group=cfg.wandb.group,
+        mode=cfg.wandb.mode,
+        dir=cfg.wandb.dir,
+        tags=cfg.wandb.tags,
         config=config_dict,
         name=os.environ.get("SLURM_JOB_NAME", None) or None,
         resume="allow",
@@ -128,10 +128,10 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
         model,
         train_loader,
         val_loader,
-        cfg["train"]["epochs_phase1"],
+        cfg.train.epochs_phase1,
     )
 
-    return os.path.join(cfg["train"]["ckpt_dir"], "enc_vae.pt"), final_metrics
+    return os.path.join(cfg.train.ckpt_dir, "enc_vae.pt"), final_metrics
 
 
 def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
@@ -144,11 +144,11 @@ def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
         model,
         train_loader,
         val_loader,
-        cfg["train"]["epochs_phase1"],
+        cfg.train.epochs_phase1,
     )
 
-    phi_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_phi.pt")
-    g_path = os.path.join(cfg["train"]["ckpt_dir"], "contrastive_g.pt")
+    phi_path = os.path.join(cfg.train.ckpt_dir, "contrastive_phi.pt")
+    g_path = os.path.join(cfg.train.ckpt_dir, "contrastive_g.pt")
 
     return phi_path, g_path, final_metrics
 
@@ -159,7 +159,7 @@ def train_phase2_dynamics(
     """Dynamics training using GenericTrainer"""
     train_loader, val_loader = DataManager(cfg).get_data_loaders()
     if ckpt_dir is None:
-        ckpt_dir = cfg["train"]["ckpt_dir"]
+        ckpt_dir = cfg.train.ckpt_dir
     ckpt_path = os.path.join(
         ckpt_dir,
         f"{repr_method}.pt",
@@ -178,10 +178,10 @@ def train_phase2_dynamics(
     model.set_encoder(encoder_fn)
     trainer = GenericTrainer(cfg, device, wb)
     final_metrics = trainer.train(
-        model, train_loader, val_loader, cfg["train"]["epochs_phase2"]
+        model, train_loader, val_loader, cfg.train.epochs_phase2
     )
 
-    out_path = os.path.join(cfg["train"]["ckpt_dir"], f"dyn_{repr_method}.pt")
+    out_path = os.path.join(cfg.train.ckpt_dir, f"dyn_{repr_method}.pt")
     return out_path, final_metrics
 
 
@@ -192,7 +192,7 @@ def train_probes(
     train_loader, val_loader = DataManager(cfg).get_data_loaders()
 
     if ckpt_dir is None:
-        ckpt_dir = cfg["train"]["ckpt_dir"]
+        ckpt_dir = cfg.train.ckpt_dir
     ckpt_path = os.path.join(
         ckpt_dir,
         f"{repr_method}.pt",
@@ -211,10 +211,10 @@ def train_probes(
     model.set_encoder(encoder_fn)
     trainer = GenericTrainer(cfg, device, wb)
     final_metrics = trainer.train(
-        model, train_loader, val_loader, cfg["train"]["epochs_probe"]
+        model, train_loader, val_loader, cfg.train.epochs_probe
     )
 
-    out_path = os.path.join(cfg["train"]["ckpt_dir"], f"probe_{repr_method}.pt")
+    out_path = os.path.join(cfg.train.ckpt_dir, f"probe_{repr_method}.pt")
     return out_path, final_metrics
 
 
@@ -229,7 +229,7 @@ def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
     print("====================")
 
-    device = torch.device(cfg["train"]["device"])
+    device = torch.device(cfg.train.device)
     seed_all(cfg.data.seed)
     wb = _maybe_init_wandb(cfg)
 

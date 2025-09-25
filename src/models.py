@@ -43,11 +43,11 @@ class TrainableModel(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def get_optimizer_config(self, cfg: Any) -> Dict[str, Any]:
         """Return optimizer configuration for this model"""
         pass
 
-    def save_checkpoint(self, ckpt_dir: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:
         """
         Save model checkpoint(s) and return info for wandb artifacts
         Returns: {"paths": list, "artifact_name": str, "artifact_type": str}
@@ -139,11 +139,11 @@ class VAE(TrainableModel):
         }
         return loss, metrics
 
-    def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def get_optimizer_config(self, cfg: Any) -> Dict[str, Any]:
         return {
             "type": "AdamW",
-            "lr": cfg["train"]["vae"]["lr"],
-            "weight_decay": cfg["train"]["vae"]["weight_decay"],
+            "lr": cfg.train.vae.lr,
+            "weight_decay": cfg.train.vae.weight_decay,
         }
 
     @property
@@ -223,11 +223,11 @@ class NachumModel(TrainableModel):
         metrics = {"val_loss": loss.item()}
         return loss, metrics
 
-    def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def get_optimizer_config(self, cfg: Any) -> Dict[str, Any]:
         return {
             "type": "AdamW",
-            "lr": cfg["train"]["contrastive"]["lr"],
-            "weight_decay": cfg["train"]["contrastive"]["weight_decay"],
+            "lr": cfg.train.contrastive.lr,
+            "weight_decay": cfg.train.contrastive.weight_decay,
         }
 
     @property
@@ -297,14 +297,14 @@ class DynamicsModel(TrainableModel):
         metrics = {"val_mse": loss.item()}
         return loss, metrics
 
-    def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def get_optimizer_config(self, cfg: Any) -> Dict[str, Any]:
         return {
             "type": "AdamW",
-            "lr": cfg["train"]["dynamics"]["lr"],
-            "weight_decay": cfg["train"]["dynamics"]["weight_decay"],
+            "lr": cfg.train.dynamics.lr,
+            "weight_decay": cfg.train.dynamics.weight_decay,
         }
 
-    def save_checkpoint(self, ckpt_dir: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:
         """Save dynamics checkpoint and return info for wandb artifacts"""
         os.makedirs(ckpt_dir, exist_ok=True)
         ckpt_path = os.path.join(ckpt_dir, f"dyn_{self.z_space}.pt")
@@ -375,14 +375,14 @@ class Probe(TrainableModel):
         metrics = {"val_mse": loss.item()}
         return loss, metrics
 
-    def get_optimizer_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def get_optimizer_config(self, cfg: Any) -> Dict[str, Any]:
         return {
             "type": "AdamW",
-            "lr": cfg["train"]["probe"]["lr"],
-            "weight_decay": cfg["train"]["probe"]["weight_decay"],
+            "lr": cfg.train.probe.lr,
+            "weight_decay": cfg.train.probe.weight_decay,
         }
 
-    def save_checkpoint(self, ckpt_dir: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:
         """Save probe checkpoint and return info for wandb artifacts"""
         os.makedirs(ckpt_dir, exist_ok=True)
         ckpt_path = os.path.join(ckpt_dir, f"probe_{self.z_space}.pt")
