@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 import json
+import logging
 from pathlib import Path
 from typing import Tuple, Any
 from datetime import datetime
@@ -122,10 +123,10 @@ class DataManager:
             Tuple of (train_loader, val_loader)
         """
         if self._should_regenerate_data():
-            print("🔄 Data config mismatch or missing - regenerating data...")
+            logging.info("Data config mismatch or missing - regenerating data...")
             self._generate_data_with_config()
         else:
-            print("✅ Data config matches - using existing data")
+            logging.info("Data config matches - using existing data")
 
         return self._create_loaders()
 
@@ -139,12 +140,12 @@ class DataManager:
         # Check if data files exist
         required_files = ["train.npz", "val.npz", "test.npz"]
         if not all((self.data_dir / f).exists() for f in required_files):
-            print("📁 Missing data files")
+            logging.debug("Missing data files")
             return True
 
         # Check if config file exists
         if not self.config_path.exists():
-            print("📁 Missing data config file")
+            logging.debug("Missing data config file")
             return True
 
         # Load and compare configs
@@ -154,21 +155,21 @@ class DataManager:
             current_config = OmegaConf.to_container(self.cfg.data, resolve=True)
 
             if stored_config != current_config:
-                print("⚠️  Data config differs from current config")
+                logging.info("Data config differs from current config")
                 self._print_config_diff(stored_config, current_config)
                 return True
 
         except Exception as e:
-            print(f"❌ Error reading stored config: {e}")
+            logging.warning(f"Error reading stored config: {e}")
             return True
 
         return False
 
     def _print_config_diff(self, stored_config: Dict[str, Any], current_config: Any):
         """Print differences between stored and current config for debugging."""
-        print("Config differences:")
+        logging.info("Config differences:")
         if not isinstance(current_config, dict):
-            print(f"  Current config type mismatch: {type(current_config)}")
+            logging.info(f"  Current config type mismatch: {type(current_config)}")
             return
 
         all_keys = set(stored_config.keys()) | set(current_config.keys())
@@ -178,7 +179,7 @@ class DataManager:
             current_val = current_config.get(key, "<MISSING>")
 
             if stored_val != current_val:
-                print(f"  {key}: {stored_val} → {current_val}")
+                logging.info(f"  {key}: {stored_val} → {current_val}")
 
     def _generate_data_with_config(self):
         """Generate data and save both data and config."""
@@ -211,8 +212,8 @@ class DataManager:
             path = self.data_dir / f"{split_name}.npz"
             np.savez(str(path), s=triples["s"], a=triples["a"], sp=triples["sp"])
 
-            print(
-                f"📝 Wrote {path} with shapes s{triples['s'].shape}, "
+            logging.info(
+                f"Generated {split_name} data: {path} with shapes s{triples['s'].shape}, "
                 f"a{triples['a'].shape}, sp{triples['sp'].shape}"
             )
 
@@ -225,7 +226,7 @@ class DataManager:
         config_dict = OmegaConf.to_container(self.cfg.data, resolve=True)
         with open(self.config_path, "w") as f:
             yaml.dump(config_dict, f, default_flow_style=False, sort_keys=True)
-        print(f"💾 Saved data config to {self.config_path}")
+        logging.info(f"Saved data config to {self.config_path}")
 
         # Save metadata as JSON
         metadata = {
@@ -235,7 +236,7 @@ class DataManager:
 
         with open(self.metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
-        print(f"💾 Saved metadata to {self.metadata_path}")
+        logging.info(f"Saved metadata to {self.metadata_path}")
 
     def _get_config_hash(self, config_dict: Any) -> str:
         """Generate a hash of the config for quick comparison."""
@@ -246,6 +247,10 @@ class DataManager:
         """Create PyTorch data loaders from existing data."""
         batch_size = self.cfg.train.batch_size
         num_workers = self.cfg.train.num_workers
+
+        logging.info(
+            f"Creating data loaders (batch_size={batch_size}, num_workers={num_workers})"
+        )
 
         train_loader = DataLoader(
             TriplesNPZ(str(self.data_dir / "train.npz")),
@@ -280,7 +285,7 @@ class DataManager:
 
     def force_regenerate(self):
         """Force regeneration of data regardless of config match."""
-        print("🔄 Force regenerating data...")
+        logging.info("Force regenerating data...")
         self._generate_data_with_config()
 
     def get_data_info(self) -> dict:

@@ -3,6 +3,7 @@ import argparse
 import yaml
 import wandb
 import torch
+import logging
 from torch.utils.data import DataLoader
 
 from data import TriplesNPZ
@@ -11,6 +12,7 @@ from utils import seed_all
 
 
 def load_components(cfg, repr_method: str, device, ckpt_dir: str):
+    logging.info(f"Loading {repr_method} components from {ckpt_dir}")
     D = cfg.data.signal_dim + cfg.data.noise_dim
 
     if repr_method == "vae":
@@ -132,7 +134,7 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
         mse_sum += mse * s.size(0)
         n += s.size(0)
     final = mse_sum / n
-    print(f"[EVAL-{repr_method}] next-signal MSE = {final:.6f}")
+    logging.info(f"[EVAL-{repr_method}] next-signal MSE = {final:.6f}")
     wcfg = cfg.get("wandb", {})
     if wcfg.get("enabled", False):
         wandb.log({f"eval/{repr_method}_next_signal_mse": final})
@@ -140,10 +142,12 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str):
 
 
 def main(cfg, repr_method, wb=None, ckpt_dir=None):
+    logging.info(f"Starting evaluation for {repr_method} method")
     if ckpt_dir is None:
         ckpt_dir = cfg.train.ckpt_dir
     wcfg = cfg.wandb
     if wcfg.enabled and wb is None:
+        logging.info("Initializing wandb for evaluation")
         wandb.init(
             project=wcfg.project,
             entity=wcfg.entity,
@@ -156,6 +160,7 @@ def main(cfg, repr_method, wb=None, ckpt_dir=None):
             resume="allow",
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device}")
     seed_all(cfg.data.seed)
     evaluate(
         cfg,
@@ -163,6 +168,7 @@ def main(cfg, repr_method, wb=None, ckpt_dir=None):
         device,
         ckpt_dir,
     )
+    logging.info("Evaluation completed")
 
 
 if __name__ == "__main__":
@@ -184,11 +190,16 @@ if __name__ == "__main__":
     )
     args = ap.parse_args()
 
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+
     config_path = os.path.join(args.hydra_output_dir, ".hydra", "config.yaml")
+    logging.info(f"Loading config from: {config_path}")
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
     cfg["wandb"]["enabled"] = False  # no wandb for standalone eval
-    print(f"Loaded config from: {config_path}")
 
     main(
         cfg=cfg,

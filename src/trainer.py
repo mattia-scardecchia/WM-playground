@@ -1,4 +1,5 @@
 import os
+import logging
 from models import TrainableModel
 import torch
 import wandb
@@ -84,9 +85,9 @@ class GenericTrainer:
 
         # Console logging
         if phase == "val":
-            print(f"[{phase_name.upper()}-VAL] Epoch {epoch + 1}: {metrics_str}")
+            logging.info(f"[{phase_name.upper()}-VAL] Epoch {epoch + 1}: {metrics_str}")
         else:
-            print(f"[{phase_name.upper()}] Epoch {epoch + 1}: {metrics_str}")
+            logging.info(f"[{phase_name.upper()}] Epoch {epoch + 1}: {metrics_str}")
 
         # Wandb logging
         if self.wb is not None:
@@ -103,7 +104,7 @@ class GenericTrainer:
         artifact_name = checkpoint_info["artifact_name"]
         artifact_type = checkpoint_info["artifact_type"]
         for path in checkpoint_paths:
-            print(f"Saved {path}")
+            logging.info(f"Saved checkpoint: {path}")
 
         # Handle wandb artifacts
         if self.wb is not None:
@@ -122,6 +123,7 @@ class GenericTrainer:
         num_epochs: int,
     ) -> Dict[str, float]:
         """Full training loop"""
+        logging.info(f"Starting training for {model.id} model ({num_epochs} epochs)")
         opt_config = model.get_optimizer_config(self.cfg)
         optimizer = self.setup_optimizer(model, opt_config)
         if self.wb is not None:
@@ -142,4 +144,5 @@ class GenericTrainer:
             {f"final_{model.id}_val_{k}": v for k, v in val_metrics.items()}
         )
         self.save_checkpoint(model)
+        logging.info(f"Completed training for {model.id} model")
         return final_metrics

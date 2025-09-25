@@ -98,8 +98,10 @@ def load_encoder(
 def _maybe_init_wandb(cfg: DictConfig):
     """Initialize wandb if enabled"""
     if not cfg.wandb.enabled:
+        logging.info("Wandb logging disabled")
         return None
 
+    logging.info(f"Initializing wandb project: {cfg.wandb.project}")
     config_dict = cfg
     if isinstance(cfg, omegaconf.dictconfig.DictConfig):
         config_dict = OmegaConf.to_container(cfg, resolve=True)
@@ -115,6 +117,7 @@ def _maybe_init_wandb(cfg: DictConfig):
         name=os.environ.get("SLURM_JOB_NAME", None) or None,
         resume="allow",
     )
+    logging.info(f"Wandb run initialized: {run.name}")
     return run
 
 
@@ -220,32 +223,60 @@ def train_probes(
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+
     # Set checkpoint directory to hydra output directory
     hydra_cfg = HydraConfig.get()
     hydra_output_dir = hydra_cfg.runtime.output_dir
     cfg.train.ckpt_dir = os.path.join(hydra_output_dir, "ckpts")
 
-    print("=== Configuration ===")
-    print(OmegaConf.to_yaml(cfg))
-    print("====================")
+    logging.info("=== Configuration ===")
+    logging.info(f"\n{OmegaConf.to_yaml(cfg)}")
+    logging.info("====================")
 
     device = torch.device(cfg.train.device)
+    logging.info(f"Using device: {device}")
     seed_all(cfg.data.seed)
+    logging.info(f"Set random seed to {cfg.data.seed}")
     wb = _maybe_init_wandb(cfg)
 
+    # Phase 1: Representation learning
+    logging.info(f"Starting Phase 1: {cfg.method} representation learning")
     if cfg.method == "vae":
         train_phase1_vae(cfg, device, wb)
     elif cfg.method == "contrastive":
         train_phase1_contrastive(cfg, device, wb)
     else:
         raise ValueError("method must be 'vae' or 'contrastive'")
+    logging.info(f"Completed Phase 1: {cfg.method} representation learning")
 
-    train_phase2_dynamics(cfg, device, repr_method=cfg.method, wb=wb, ckpt_dir=None)
-    train_probes(cfg, device, repr_method=cfg.method, wb=wb, ckpt_dir=None)
+    # Phase 2: Dynamics learning
+    logging.info("Starting Phase 2: Dynamics learning")
+    train_phase2_dynamics(
+        cfg, device, repr_method=cfg.method, wb=wb, ckpt_dir=cfg.train.ckpt_dir
+    )
+    logging.info("Completed Phase 2: Dynamics learning")
+
+    # Phase 3: Probe training
+    logging.info("Starting Phase 3: Probe training")
+    train_probes(
+        cfg, device, repr_method=cfg.method, wb=wb, ckpt_dir=cfg.train.ckpt_dir
+    )
+    logging.info("Completed Phase 3: Probe training")
+
+    # Evaluation
+    logging.info("Starting evaluation")
     eval_main(cfg, cfg.method, wb)
+    logging.info("Completed evaluation")
 
     if wb is not None:
+        logging.info("Finishing wandb run")
         wb.finish()
+
+    logging.info("Training pipeline completed successfully!")
 
 
 if __name__ == "__main__":
