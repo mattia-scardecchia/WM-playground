@@ -47,6 +47,8 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
             contrastive_cfg.enc_widths,
             contrastive_cfg.proj_widths,
             temperature=cfg.train.contrastive.temperature,
+            eps=contrastive_cfg.eps,
+            use_layer_norm=contrastive_cfg.use_layer_norm,
             activation=contrastive_cfg.activation,
         )
         contrastive_model.load_state_dict(
@@ -158,7 +160,10 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str, split: str = "test"):
         logging.info(f"[EVAL-{repr_method}] {metric_name} = {value:.4f}")
     wcfg = cfg.get("wandb", {})
     if wcfg.get("enabled", False):
-        wandb_metrics = {f"eval/{k}": v for k, v in final_metrics.items()}
+        prefix = {"test": "eval", "train": "train", "val": "valid"}[
+            split
+        ]  # test -> eval for backwards compatibility
+        wandb_metrics = {f"{prefix}/{k}": v for k, v in final_metrics.items()}
         wandb.log(wandb_metrics)
 
     return final_metrics
@@ -185,12 +190,14 @@ def main(cfg, repr_method, wb=None, ckpt_dir=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Using device: {device}")
     seed_all(cfg.data.seed)
-    evaluate(
-        cfg,
-        repr_method,
-        device,
-        ckpt_dir,
-    )
+    for split in ["train", "val", "test"]:
+        evaluate(
+            cfg,
+            repr_method,
+            device,
+            ckpt_dir,
+            split=split,
+        )
     logging.info("Evaluation completed")
 
 

@@ -5,23 +5,38 @@ epochs_probe: 1
 num_workers: 0
 ckpt_dir: "ckpts/" # relative path within hydra output dir
 eval_batch_size: 512
-wandb_log_freq: 200
 device: "mps"
 
 vae:
   lr: 0.002
   weight_decay: 0.0
   beta: 0.001
+  gradient_clip:
+    enabled: false
+    max_norm: 10.0
+    norm_type: 2.0
 
 contrastive:
   lr: 0.001
   weight_decay: 0.0
-  temperature: 0.1
+  temperature: 3.0
+  gradient_clip:
+    enabled: false
+    max_norm: 10.0
+    norm_type: 2.0
 
 dynamics:
   lr: 0.001
   weight_decay: 0.0
+  gradient_clip:
+    enabled: false
+    max_norm: 10.0
+    norm_type: 2.0
 
 probe:
   lr: 0.001
   weight_decay: 0.0
+  gradient_clip:
+    enabled: false
+    max_norm: 10.0
+    norm_type: 2.0

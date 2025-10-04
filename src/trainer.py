@@ -21,6 +21,7 @@ class GenericTrainer:
     ) -> torch.optim.Optimizer:
         """Create optimizer based on configuration"""
         assert opt_config["type"] == "AdamW"
+        self.gradient_clip_config = opt_config["gradient_clip"]
         return torch.optim.AdamW(
             model.parameters(),
             lr=opt_config["lr"],
@@ -42,6 +43,13 @@ class GenericTrainer:
 
             optimizer.zero_grad()
             loss.backward()
+
+            if self.gradient_clip_config.enabled:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=self.gradient_clip_config.max_norm,
+                    norm_type=self.gradient_clip_config.norm_type,
+                )
             optimizer.step()
 
             batch_size = batch["s"].size(0)
@@ -117,7 +125,7 @@ class GenericTrainer:
 
     def train(
         self,
-        model,
+        model: TrainableModel,
         train_loader: DataLoader,
         val_loader: DataLoader,
         num_epochs: int,
@@ -127,8 +135,9 @@ class GenericTrainer:
         opt_config = model.get_optimizer_config(self.cfg)
         optimizer = self.setup_optimizer(model, opt_config)
         if self.wb is not None:
-            log_freq = self.cfg.train.wandb_log_freq
-            wandb.watch(model, log="all", log_freq=log_freq)
+            log_freq = self.cfg.wandb.log_freq
+            if model.id in ["vae", "contrastive"]:
+                wandb.watch(model, log="all", log_freq=log_freq)
         final_metrics, train_metrics, val_metrics = {}, {}, {}
 
         for epoch in range(num_epochs):

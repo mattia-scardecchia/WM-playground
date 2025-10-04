@@ -5,3 +5,4 @@ group: null
 mode: "online"
 dir: "logs"
 tags: ["prova"]
+log_freq: 1000

@@ -31,7 +31,7 @@ def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
     ).to(device)
 
 
-def create_contrastive_trainer(
+def create_nachum_contrastive(
     cfg: DictConfig, device: torch.device
 ) -> NachumConstrastive:
     """Create ContrastiveTrainer model from config"""
@@ -44,6 +44,8 @@ def create_contrastive_trainer(
         contrastive_cfg.enc_widths,
         contrastive_cfg.proj_widths,
         temperature=cfg.train.contrastive.temperature,
+        eps=contrastive_cfg.eps,
+        use_layer_norm=contrastive_cfg.use_layer_norm,
         activation=contrastive_cfg.activation,
     ).to(device)
 
@@ -84,7 +86,7 @@ def load_encoder(
     ckpt_path: str,
 ):
     """Load pre-trained encoder and return model + encoding function"""
-    factory_fn = create_vae if repr_method == "vae" else create_contrastive_trainer
+    factory_fn = create_vae if repr_method == "vae" else create_nachum_contrastive
     model = factory_fn(cfg, device)
     model.load_state_dict(
         torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
@@ -142,7 +144,7 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
 def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
     """Contrastive training using GenericTrainer"""
     train_loader, val_loader = DataManager(cfg).get_data_loaders()
-    model = create_contrastive_trainer(cfg, device)
+    model = create_nachum_contrastive(cfg, device)
     trainer = GenericTrainer(cfg, device, wb)
 
     final_metrics = trainer.train(

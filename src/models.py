@@ -145,6 +145,7 @@ class VAE(TrainableModel):
             "type": "AdamW",
             "lr": cfg.train.vae.lr,
             "weight_decay": cfg.train.vae.weight_decay,
+            "gradient_clip": cfg.train.vae.gradient_clip,
         }
 
     @property
@@ -168,18 +169,22 @@ class EncoderMLP(nn.Module):
         hidden_dims: List[int],
         embed_dim: int,
         activation: str,
-        eps: float = 1e-5,
+        use_layer_norm: bool,
+        eps: float,
     ):
         super().__init__()
-        self.net = make_mlp([input_dim] + hidden_dims + [embed_dim - 1], activation)
+        self.use_layer_norm = use_layer_norm
+        out_dim = embed_dim - 1 if use_layer_norm else embed_dim
+        self.net = make_mlp([input_dim] + hidden_dims + [out_dim], activation)
         self.layer_norm = nn.LayerNorm(embed_dim, elementwise_affine=False, eps=eps)
 
     def forward(self, x):
         """Following https://github.com/google-research/google-research/blob/master/rl_repr/batch_rl/embed.py#L135"""
-        h = self.net(x)
-        h = torch.cat([h, torch.ones_like(h[:, :1])], dim=-1)  # B, D-1 -> B, D
-        h = self.layer_norm(h)
-        return h
+        x = self.net(x)
+        if self.use_layer_norm:
+            x = torch.cat([x, torch.ones_like(x[:, :1])], dim=-1)  # B, D-1 -> B, D
+            x = self.layer_norm(x)
+        return x
 
 
 class NachumConstrastive(TrainableModel):
@@ -190,8 +195,10 @@ class NachumConstrastive(TrainableModel):
         num_actions: int,
         enc_widths,
         proj_widths,
-        temperature: float = 0.1,
-        activation: str = "relu",
+        temperature: float,
+        use_layer_norm: bool,
+        eps: float,  # ignored if not use_layer_norm
+        activation: str,
     ):
         super().__init__()
         self.x_dim = x_dim
@@ -203,12 +210,16 @@ class NachumConstrastive(TrainableModel):
             hidden_dims=list(enc_widths),
             embed_dim=z_dim,
             activation=activation,
+            eps=eps,
+            use_layer_norm=use_layer_norm,
         )
         self.g = EncoderMLP(
             input_dim=x_dim + num_actions,
             hidden_dims=list(proj_widths),
             embed_dim=z_dim,
             activation=activation,
+            eps=eps,
+            use_layer_norm=use_layer_norm,
         )
 
     def forward(self, s):
@@ -256,6 +267,7 @@ class NachumConstrastive(TrainableModel):
             "type": "AdamW",
             "lr": cfg.train.contrastive.lr,
             "weight_decay": cfg.train.contrastive.weight_decay,
+            "gradient_clip": cfg.train.contrastive.gradient_clip,
         }
 
     @property
@@ -330,6 +342,7 @@ class DynamicsModel(TrainableModel):
             "type": "AdamW",
             "lr": cfg.train.dynamics.lr,
             "weight_decay": cfg.train.dynamics.weight_decay,
+            "gradient_clip": cfg.train.dynamics.gradient_clip,
         }
 
     def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:
@@ -408,6 +421,7 @@ class Probe(TrainableModel):
             "type": "AdamW",
             "lr": cfg.train.probe.lr,
             "weight_decay": cfg.train.probe.weight_decay,
+            "gradient_clip": cfg.train.probe.gradient_clip,
         }
 
     def save_checkpoint(self, ckpt_dir: str, cfg: Any) -> Dict[str, Any]:

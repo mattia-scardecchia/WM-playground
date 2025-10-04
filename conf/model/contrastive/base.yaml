@@ -2,3 +2,5 @@ z_dim: 2
 enc_widths: [256, 256]
 proj_widths: [256, 256]
 activation: "relu"
+use_layer_norm: true
+eps: 0.00001
