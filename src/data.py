@@ -37,7 +37,7 @@ class NoisyVectorWorld:
         self.rng = np.random.RandomState(seed)
 
     def init_state(self, N: int) -> np.ndarray:
-        signal = self.rng.randn(N, self.signal_dim) * self.step_size
+        signal = self.rng.randn(N, self.signal_dim)
         noise = self.rng.randn(N, self.noise_dim)
         return np.concatenate([signal, noise], axis=1)
 

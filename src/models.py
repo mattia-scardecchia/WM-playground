@@ -1,4 +1,5 @@
-from typing import Callable, Sequence, Dict, Any, Tuple, Optional, Union
+from tkinter import E
+from typing import Callable, List, Sequence, Dict, Any, Tuple, Optional, Union
 import os
 import torch
 import torch.nn as nn
@@ -160,7 +161,28 @@ class VAE(TrainableModel):
         return encode_fn
 
 
-class NachumModel(TrainableModel):
+class EncoderMLP(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dims: List[int],
+        embed_dim: int,
+        activation: str,
+        eps: float = 1e-5,
+    ):
+        super().__init__()
+        self.net = make_mlp([input_dim] + hidden_dims + [embed_dim - 1], activation)
+        self.layer_norm = nn.LayerNorm(embed_dim, elementwise_affine=False, eps=eps)
+
+    def forward(self, x):
+        """Following https://github.com/google-research/google-research/blob/master/rl_repr/batch_rl/embed.py#L135"""
+        h = self.net(x)
+        h = torch.cat([h, torch.ones_like(h[:, :1])], dim=-1)  # B, D-1 -> B, D
+        h = self.layer_norm(h)
+        return h
+
+
+class NachumConstrastive(TrainableModel):
     def __init__(
         self,
         x_dim: int,
@@ -176,11 +198,17 @@ class NachumModel(TrainableModel):
         self.z_dim = z_dim
         self.num_actions = num_actions
         self.temperature = temperature
-        self.phi = nn.Sequential(
-            make_mlp([x_dim] + list(enc_widths) + [z_dim], activation)
+        self.phi = EncoderMLP(
+            input_dim=x_dim,
+            hidden_dims=list(enc_widths),
+            embed_dim=z_dim,
+            activation=activation,
         )
-        self.g = nn.Sequential(
-            make_mlp([x_dim + num_actions] + list(proj_widths) + [z_dim], activation)
+        self.g = EncoderMLP(
+            input_dim=x_dim + num_actions,
+            hidden_dims=list(proj_widths),
+            embed_dim=z_dim,
+            activation=activation,
         )
 
     def forward(self, s):

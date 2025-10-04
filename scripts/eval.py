@@ -8,7 +8,7 @@ import logging
 from torch.utils.data import DataLoader
 
 from data import TriplesNPZ
-from models import VAE, NachumModel, DynamicsModel, Probe, _unpack_batch
+from models import VAE, NachumConstrastive, DynamicsModel, Probe, _unpack_batch
 from utils import seed_all, AverageMeter
 
 
@@ -40,7 +40,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
     elif repr_method == "contrastive":
         contrastive_cfg = cfg.model.contrastive
         z_dim = contrastive_cfg.z_dim
-        contrastive_model = NachumModel(
+        contrastive_model = NachumConstrastive(
             D,
             z_dim,
             cfg.data.num_actions,

@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from typing import Optional
 
 from data import DataManager
-from models import VAE, NachumModel, DynamicsModel, Probe
+from models import VAE, NachumConstrastive, DynamicsModel, Probe
 from utils import seed_all
 from trainer import GenericTrainer
 from eval import main as eval_main
@@ -31,11 +31,13 @@ def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
     ).to(device)
 
 
-def create_contrastive_trainer(cfg: DictConfig, device: torch.device) -> NachumModel:
+def create_contrastive_trainer(
+    cfg: DictConfig, device: torch.device
+) -> NachumConstrastive:
     """Create ContrastiveTrainer model from config"""
     D = cfg.data.signal_dim + cfg.data.noise_dim
     contrastive_cfg = cfg.model.contrastive
-    return NachumModel(
+    return NachumConstrastive(
         D,
         contrastive_cfg.z_dim,
         cfg.data.num_actions,

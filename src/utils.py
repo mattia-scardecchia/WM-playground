@@ -21,14 +21,16 @@ def to_onehot(a: torch.Tensor, num_actions: int) -> torch.Tensor:
 
 
 def make_mlp(
-    sizes: Sequence[int], activation: str = "relu", out_act: bool = False
+    sizes: Sequence[int], activation: str = "relu", out_act: str = None
 ) -> nn.Sequential:
-    acts = {"relu": nn.ReLU, "tanh": nn.Tanh}
+    acts = {"relu": nn.ReLU, "tanh": nn.Tanh, "sigmoid": nn.Sigmoid}
     layers = []
     for i in range(len(sizes) - 1):
         layers.append(nn.Linear(sizes[i], sizes[i + 1]))
-        if i < len(sizes) - 2 or out_act:
+        if i < len(sizes) - 2:
             layers.append(acts[activation]())
+    if out_act is not None:
+        layers.append(acts[out_act]())
     return nn.Sequential(*layers)
 
 
