@@ -115,7 +115,7 @@ class DataManager:
         self.config_path = self.data_dir / "data_config.yaml"
         self.metadata_path = self.data_dir / "metadata.json"
 
-    def get_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
+    def get_data_loaders(self, batch_size: int) -> Tuple[DataLoader, DataLoader]:
         """
         Main entry point - returns train/val loaders, generating data if needed.
 
@@ -128,7 +128,7 @@ class DataManager:
         else:
             logging.info("Data config matches - using existing data")
 
-        return self._create_loaders()
+        return self._create_loaders(batch_size)
 
     def _should_regenerate_data(self) -> bool:
         """
@@ -243,9 +243,8 @@ class DataManager:
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()
 
-    def _create_loaders(self) -> Tuple[DataLoader, DataLoader]:
+    def _create_loaders(self, batch_size: int) -> Tuple[DataLoader, DataLoader]:
         """Create PyTorch data loaders from existing data."""
-        batch_size = self.cfg.train.batch_size
         num_workers = self.cfg.train.num_workers
 
         logging.info(

@@ -127,7 +127,9 @@ def _maybe_init_wandb(cfg: DictConfig):
 
 def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
     """VAE training using GenericTrainer"""
-    train_loader, val_loader = DataManager(cfg).get_data_loaders()
+    train_loader, val_loader = DataManager(cfg).get_data_loaders(
+        batch_size=cfg.train.vae.batch_size
+    )
     model = create_vae(cfg, device)
     trainer = GenericTrainer(cfg, device, wb)
 
@@ -143,7 +145,9 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
 
 def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
     """Contrastive training using GenericTrainer"""
-    train_loader, val_loader = DataManager(cfg).get_data_loaders()
+    train_loader, val_loader = DataManager(cfg).get_data_loaders(
+        batch_size=cfg.train.contrastive.batch_size
+    )
     model = create_nachum_contrastive(cfg, device)
     trainer = GenericTrainer(cfg, device, wb)
 
@@ -164,7 +168,9 @@ def train_phase2_dynamics(
     cfg: DictConfig, device: torch.device, repr_method: str, wb, ckpt_dir: str
 ):
     """Dynamics training using GenericTrainer"""
-    train_loader, val_loader = DataManager(cfg).get_data_loaders()
+    train_loader, val_loader = DataManager(cfg).get_data_loaders(
+        batch_size=cfg.train.dynamics.batch_size
+    )
     if ckpt_dir is None:
         ckpt_dir = cfg.train.ckpt_dir
     ckpt_path = os.path.join(
@@ -196,7 +202,9 @@ def train_probes(
     cfg: DictConfig, device: torch.device, repr_method: str, wb, ckpt_dir: str
 ):
     """Refactored probe training using GenericTrainer"""
-    train_loader, val_loader = DataManager(cfg).get_data_loaders()
+    train_loader, val_loader = DataManager(cfg).get_data_loaders(
+        batch_size=cfg.train.probe.batch_size
+    )
 
     if ckpt_dir is None:
         ckpt_dir = cfg.train.ckpt_dir
