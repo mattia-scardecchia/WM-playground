@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -10,9 +10,51 @@ from datetime import datetime
 import hashlib
 from omegaconf import DictConfig, OmegaConf
 import yaml
+from abc import ABC, abstractmethod
 
 
-class NoisyVectorWorld:
+class BaseEnv(ABC):
+    """Abstract environment interface for trajectory generation and config serialization.
+
+    Concrete envs must implement state initialization, stepping, sampling trajectories,
+    and returning a serialisable config dict describing how data was generated.
+    """
+
+    signal_dim: int
+    step_size: float
+    rng: Any
+    seed: int
+    static_noise: bool
+
+    @abstractmethod
+    def init_state(self, N: int) -> Tuple[np.ndarray, np.ndarray]:
+        pass
+
+    @abstractmethod
+    def step(self, s: np.ndarray, a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Advance state given actions.
+
+        For compatibility the method may return either:
+          - next_observed_state (np.ndarray)
+        or
+          - (next_latent, next_observed_state) as a tuple of np.ndarrays
+        Concrete envs should document what they return; DataManager and the
+        trajectory generation helper will handle both cases.
+        """
+        pass
+
+    @classmethod
+    @abstractmethod
+    def from_config(cls, cfg: Any) -> "BaseEnv":
+        """Create an env instance from a config object (dict/OmegaConf).
+
+        This allows DataManager to instantiate envs without knowing their
+        constructor signature.
+        """
+        pass
+
+
+class LegacyVectorWorld(BaseEnv):
     """State s = [signal(2), noise(>=1)]. Actions move only the 2-D signal; noise is resampled i.i.d.
     Actions: 0:+x, 1:-x, 2:+y, 3:-y (scaled by step).
     """
@@ -21,70 +63,191 @@ class NoisyVectorWorld:
         self,
         signal_dim: int = 2,
         noise_dim: int = 100,
-        num_actions: int = 4,
         step: float = 1.0,
         seed: int = 0,
         static_noise: bool = False,
     ):
         assert signal_dim == 2
-
+        self.seed = seed
         self.D = signal_dim + noise_dim
         self.signal_dim = signal_dim
         self.noise_dim = noise_dim
-        self.num_actions = num_actions
-        self.step_size = float(step)
+        self.step_size = step
         self.static_noise = static_noise
         self.rng = np.random.RandomState(seed)
 
-    def init_state(self, N: int) -> np.ndarray:
+    @classmethod
+    def from_config(cls, cfg: Any) -> "LegacyVectorWorld":
+        return cls(
+            signal_dim=cfg.signal_dim,
+            noise_dim=cfg.noise_dim,
+            step=cfg.step_size,
+            seed=cfg.seed,
+            static_noise=cfg.static_noise,
+        )
+
+    def init_state(self, N: int) -> Tuple[np.ndarray, np.ndarray]:
         signal = self.rng.randn(N, self.signal_dim)
         noise = self.rng.randn(N, self.noise_dim)
-        return np.concatenate([signal, noise], axis=1)
+        return np.concatenate([signal, noise], axis=1), signal
 
-    def step(self, s: np.ndarray, a: np.ndarray) -> np.ndarray:
-        pos = s[:, : self.signal_dim].copy()
-        dx = np.zeros_like(pos)
-        dx[:, 0] += (a == 0) * self.step_size
-        dx[:, 0] += (a == 1) * (-self.step_size)
-        dx[:, 1] += (a == 2) * self.step_size
-        dx[:, 1] += (a == 3) * (-self.step_size)
-        pos_next = pos + dx
+    def step(self, s: np.ndarray, a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        sig = s[:, : self.signal_dim].copy()
+
+        sig_next = sig + a
         if self.static_noise:
             noise_next = s[:, self.signal_dim :].copy()
         else:
             noise_next = self.rng.randn(s.shape[0], self.noise_dim)
-        sp = np.concatenate([pos_next, noise_next], axis=1)
-        return sp
+        sp = np.concatenate([sig_next, noise_next], axis=1)
+        return sp, sig_next
+
+
+class LatentVectorWorld(BaseEnv):
+    """New environmental variant with a fixed random MLP projection.
+
+    The env maintains a low-dimensional latent composed of three parts:
+      - signal (learned / acted upon)
+      - static (fixed per-episode)
+      - memoryless (resampled each step)
+
+    The observed state is the normalized projection of the latent via a fixed 1-hidden-layer
+    MLP (tanh hidden).
+    """
+
+    def __init__(
+        self,
+        signal_dim: int,
+        static_noise_dim: int,
+        memoryless_noise_dim: int,
+        proj_dim: int,
+        mlp_hidden_dim: Optional[int],
+        step: float,
+        seed: int,
+    ):
+        self.signal_dim = signal_dim
+        self.static_noise_dim = static_noise_dim
+        self.memoryless_noise_dim = memoryless_noise_dim
+        self.step_size = step
+        self.proj_dim = proj_dim
+        self.mlp_hidden_dim = (
+            mlp_hidden_dim if mlp_hidden_dim is not None else self.proj_dim
+        )
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
+
+        input_dim = self.signal_dim + self.static_noise_dim + self.memoryless_noise_dim
+        h = self.mlp_hidden_dim
+        o = self.proj_dim
+        self.W1 = self.rng.randn(input_dim, h).astype(np.float32)
+        self.b1 = self.rng.randn(h).astype(np.float32)
+        self.W2 = self.rng.randn(h, o).astype(np.float32)
+        self.b2 = self.rng.randn(o).astype(np.float32)
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "LatentVectorWorld":
+        return cls(
+            signal_dim=cfg.signal_dim,
+            static_noise_dim=cfg.static_noise_dim,
+            memoryless_noise_dim=cfg.memoryless_noise_dim,
+            proj_dim=cfg.state_dim,
+            mlp_hidden_dim=cfg.mlp_hidden_dim,
+            step=cfg.step_size,
+            seed=cfg.seed,
+        )
+
+    def project(self, x: np.ndarray) -> np.ndarray:
+        """Project low-dim concatenated state into higher-dim latent using fixed random MLP.
+
+        Args:
+            x: shape (N, input_dim)
+        Returns:
+            z: shape (N, proj_dim)
+        """
+        h = np.tanh(x.dot(self.W1) + self.b1)
+        z = h.dot(self.W2) + self.b2
+        z = z.astype(np.float32)
+        norms = np.linalg.norm(z, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        z = z / norms
+        return z
+
+    def init_state(self, N: int) -> Tuple[np.ndarray, np.ndarray]:
+        signal = self.rng.randn(N, self.signal_dim)
+        static = self.rng.randn(N, self.static_noise_dim)
+        memoryless = self.rng.randn(N, self.memoryless_noise_dim)
+        latent_state = np.concatenate([signal, static, memoryless], axis=1)
+        observed_state = self.project(latent_state)
+        return observed_state, signal
+
+    def step(self, s: np.ndarray, a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        N = s.shape[0]
+        sig = s[:, : self.signal_dim].copy()
+        static = s[:, self.signal_dim : self.signal_dim + self.static_noise_dim].copy()
+
+        sig_next = sig + a
+        static_next = static
+        mem_next = self.rng.randn(N, self.memoryless_noise_dim)
+        sp_latent = np.concatenate([sig_next, static_next, mem_next], axis=1)
+        sp_observed = self.project(sp_latent)
+
+        return sp_observed, sig_next
 
 
 def sample_trajectories(
-    env: NoisyVectorWorld,
+    env: BaseEnv,
     n_traj: int,
     traj_len: int,
-    policy: str = "random",
+    policy: str = "random-discrete",
 ) -> Dict[str, np.ndarray]:
+    """Generic trajectory generator using env.init_state and env.step. The env.step must return (next_state, signal_next)."""
     N = n_traj
     T = traj_len
     s_list, a_list, sp_list = [], [], []
-    s = env.init_state(N)
+    sig_list, sig_next_list = [], []
+
+    s, sig = env.init_state(N)
+
     for _ in range(T):
-        if policy == "random":
-            a = env.rng.randint(0, env.num_actions, size=(N,))
+        rng = env.rng
+        sig_dim = env.signal_dim
+
+        if policy == "random-discrete":
+            num_actions = 2 * sig_dim
+            a_discrete = rng.randint(0, num_actions, size=(N,))
+            a_cont = np.zeros((N, sig_dim), dtype=np.float32)
+            coords = a_discrete % sig_dim
+            signs = np.where(a_discrete < sig_dim, 1.0, -1.0)
+            a_cont[np.arange(N), coords] = signs * env.step_size
+            a_to_store = a_discrete
         else:
             raise ValueError(f"Unknown policy: {policy}")
-        sp = env.step(s, a)
+
+        sp, sig_next = env.step(s, a_cont)
+
         s_list.append(s.copy())
-        a_list.append(a.copy())
+        a_list.append(a_to_store.copy())
         sp_list.append(sp.copy())
+        sig_list.append(sig)
+        sig_next_list.append(sig_next)
+
         s = sp
-    s_arr = np.concatenate(s_list, axis=0)
-    a_arr = np.concatenate(a_list, axis=0)
-    sp_arr = np.concatenate(sp_list, axis=0)
-    return {
-        "s": s_arr.astype(np.float32),
-        "a": a_arr.astype(np.int64),
-        "sp": sp_arr.astype(np.float32),
+        sig = sig_next
+
+    s_arr = np.concatenate(s_list, axis=0).astype(np.float32)
+    a_arr = np.concatenate(a_list, axis=0).astype(np.float32)
+    sp_arr = np.concatenate(sp_list, axis=0).astype(np.float32)
+    sig_arr = np.concatenate(sig_list, axis=0).astype(np.float32)
+    sig_next_arr = np.concatenate(sig_next_list, axis=0).astype(np.float32)
+
+    out = {
+        "s": s_arr,
+        "a": a_arr,
+        "sp": sp_arr,
+        "sig": sig_arr,
+        "sig_next": sig_next_arr,
     }
+    return out
 
 
 class TriplesNPZ(Dataset):
@@ -93,12 +256,20 @@ class TriplesNPZ(Dataset):
         self.s = torch.from_numpy(data["s"])
         self.a = torch.from_numpy(data["a"])
         self.sp = torch.from_numpy(data["sp"])
+        self.sig = torch.from_numpy(data["sig"])
+        self.sig_next = torch.from_numpy(data["sig_next"])
 
     def __len__(self) -> int:
         return self.s.shape[0]
 
     def __getitem__(self, i: int):
-        return {"s": self.s[i], "a": self.a[i], "sp": self.sp[i]}
+        return {
+            "s": self.s[i],
+            "a": self.a[i],
+            "sp": self.sp[i],
+            "sig": self.sig[i],
+            "sig_next": self.sig_next[i],
+        }
 
 
 class DataManager:
@@ -185,39 +356,39 @@ class DataManager:
         """Generate data and save both data and config."""
         # Create output directory
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        env_type = self.cfg.data.type
+        if env_type not in ["legacy", "new"]:
+            raise ValueError()
+        env_class = LegacyVectorWorld if env_type == "legacy" else LatentVectorWorld
+        env = env_class.from_config(self.cfg.data)
 
-        # Create environment
-        env = NoisyVectorWorld(
-            signal_dim=self.cfg.data.signal_dim,
-            noise_dim=self.cfg.data.noise_dim,
-            num_actions=self.cfg.data.num_actions,
-            step=self.cfg.data.step_size,
-            seed=self.cfg.data.seed,
-            static_noise=self.cfg.data.static_noise,
-        )
-
-        # Generate data splits
         splits = [
             ("train", self.cfg.data.n_train),
             ("val", self.cfg.data.n_val),
             ("test", self.cfg.data.n_test),
         ]
-
         for split_name, n_traj in splits:
             triples = sample_trajectories(
-                env, n_traj=n_traj, traj_len=self.cfg.data.traj_len, policy="random"
+                env,
+                n_traj=n_traj,
+                traj_len=self.cfg.data.traj_len,
+                policy=self.cfg.data.policy,
             )
-
-            # Save data
             path = self.data_dir / f"{split_name}.npz"
-            np.savez(str(path), s=triples["s"], a=triples["a"], sp=triples["sp"])
+            np.savez_compressed(
+                str(path),
+                s=triples["s"],
+                a=triples["a"],
+                sp=triples["sp"],
+                sig=triples["sig"],
+                sig_next=triples["sig_next"],
+            )
 
             logging.info(
                 f"Generated {split_name} data: {path} with shapes s{triples['s'].shape}, "
-                f"a{triples['a'].shape}, sp{triples['sp'].shape}"
+                f"a{triples['a'].shape}, sp{triples['sp'].shape}, sig{triples['sig'].shape}, "
+                f"sig_next{triples['sig_next'].shape}"
             )
-
-        # Save config and metadata
         self._save_config_and_metadata()
 
     def _save_config_and_metadata(self):

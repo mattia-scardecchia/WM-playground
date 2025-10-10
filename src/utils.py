@@ -1,10 +1,18 @@
 import os
 import random
 import numpy as np
+from omegaconf import DictConfig
 import torch
 import torch.nn as nn
 from typing import Any, Dict, Sequence, Optional
 from collections import defaultdict
+
+
+def check_config(cfg: DictConfig):
+    assert cfg.data.policy == "random-discrete"
+    cfg.data.num_actions = 2 * cfg.data.signal_dim
+    if cfg.data.type == "legacy":
+        cfg.data.state_dim = cfg.data.signal_dim + cfg.data.noise_dim
 
 
 def seed_all(seed: int) -> None:

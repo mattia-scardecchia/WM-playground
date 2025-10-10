@@ -12,14 +12,14 @@ from typing import Optional
 
 from data import DataManager
 from models import VAE, NachumConstrastive, DynamicsModel, Probe
-from utils import seed_all
+from utils import check_config, seed_all
 from trainer import GenericTrainer
 from eval import main as eval_main
 
 
 def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
     """Create VAE model from config"""
-    D = cfg.data.signal_dim + cfg.data.noise_dim
+    D = cfg.data.state_dim
     vae_cfg = cfg.model.vae
     return VAE(
         D,
@@ -35,7 +35,7 @@ def create_nachum_contrastive(
     cfg: DictConfig, device: torch.device
 ) -> NachumConstrastive:
     """Create ContrastiveTrainer model from config"""
-    D = cfg.data.signal_dim + cfg.data.noise_dim
+    D = cfg.data.state_dim
     contrastive_cfg = cfg.model.contrastive
     return NachumConstrastive(
         D,
@@ -235,6 +235,8 @@ def train_probes(
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+    check_config(cfg)
+
     # Set up logging
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"

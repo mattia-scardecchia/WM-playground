@@ -14,7 +14,7 @@ from utils import seed_all, AverageMeter
 
 def load_components(cfg, repr_method: str, device, ckpt_dir: str):
     logging.info(f"Loading {repr_method} components from {ckpt_dir}")
-    D = cfg.data.signal_dim + cfg.data.noise_dim
+    D = cfg.data.state_dim
 
     if repr_method == "vae":
         vae_cfg = cfg.model.vae
@@ -118,7 +118,9 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str, split: str = "test"):
     mse = torch.nn.MSELoss()
 
     for batch in loader:
-        s, sp, a, a1h = _unpack_batch(batch, device, cfg.data.num_actions)
+        s, sp, a, a1h, sig, sig_next = _unpack_batch(
+            batch, device, cfg.data.num_actions
+        )
         batch_size = s.size(0)
 
         with torch.no_grad():

@@ -11,13 +11,17 @@ from utils import make_mlp, to_onehot
 
 def _unpack_batch(
     batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+]:
     """Helper function to prepare batch data for dynamics and contrastive models"""
     s = batch["s"].to(device)
     sp = batch["sp"].to(device)
     a = batch["a"].to(device)
     a1h = to_onehot(a, num_actions).to(device)
-    return s, sp, a, a1h
+    sig = batch["sig"].to(device)
+    sig_next = batch["sig_next"].to(device)
+    return s, sp, a, a1h, sig, sig_next
 
 
 class TrainableModel(nn.Module, ABC):
@@ -231,7 +235,7 @@ class NachumConstrastive(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(
+        s, sp, a, a1h, sig, sig_next = _unpack_batch(
             batch,
             device,
             self.num_actions,
@@ -250,7 +254,7 @@ class NachumConstrastive(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
+        s, sp, a, a1h, sig, sig_next = _unpack_batch(batch, device, self.num_actions)
 
         z = self.phi(s)  # B, D
         zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
@@ -310,7 +314,7 @@ class DynamicsModel(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
+        s, sp, a, a1h, sig, sig_next = _unpack_batch(batch, device, self.num_actions)
 
         with torch.no_grad():
             z = self.encoder_fn(s)  # type: ignore
@@ -325,7 +329,7 @@ class DynamicsModel(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h = _unpack_batch(batch, device, self.num_actions)
+        s, sp, a, a1h, sig, sig_next = _unpack_batch(batch, device, self.num_actions)
 
         with torch.no_grad():
             z = self.encoder_fn(s)  # type: ignore
@@ -390,7 +394,7 @@ class Probe(TrainableModel):
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         s = batch["s"].to(device)
-        pos_true = s[:, : self.signal_dim]
+        pos_true = batch["sig"].to(device)
 
         with torch.no_grad():
             z = self.encoder_fn(s)  # type: ignore
@@ -405,7 +409,7 @@ class Probe(TrainableModel):
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         s = batch["s"].to(device)
-        pos_true = s[:, : self.signal_dim]
+        pos_true = batch["sig"].to(device)
 
         with torch.no_grad():
             z = self.encoder_fn(s)  # type: ignore

@@ -1,14 +1,13 @@
-type: new # 'legacy' or 'new'
+type: legacy # 'legacy' or 'new'
 policy: random-discrete
 out_dir: "data/"
 
 signal_dim: 2
-static_noise_dim: 5
-memoryless_noise_dim: 5
-state_dim: 100
-mlp_hidden_dim: 100
+noise_dim: 100
+state_dim: ???
 traj_len: 2
 num_actions: ???
+static_noise: false
 
 seed: 0
 step_size: 0.3
