@@ -52,7 +52,7 @@ class GenericTrainer:
                 )
             optimizer.step()
 
-            batch_size = batch["s"].size(0)
+            batch_size = batch["state"].size(0)
             meter.update(metrics, {key: batch_size for key in metrics.keys()})
 
         return meter.avg
@@ -68,7 +68,7 @@ class GenericTrainer:
         for batch in val_loader:
             loss, metrics = model.validation_step(batch, self.device)
 
-            batch_size = batch["s"].size(0)
+            batch_size = batch["state"].size(0)
             meter.update(metrics, {key: batch_size for key in metrics.keys()})
 
         return meter.avg

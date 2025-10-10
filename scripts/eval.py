@@ -7,8 +7,8 @@ import torch
 import logging
 from torch.utils.data import DataLoader
 
-from data import TriplesNPZ
-from models import VAE, NachumConstrastive, DynamicsModel, Probe, _unpack_batch
+from data import TransitionsDataset
+from models import VAE, NachumConstrastive, DynamicsModel, Probe, _unpack_transition
 from utils import seed_all, AverageMeter
 
 
@@ -107,7 +107,7 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str, split: str = "test"):
     num_workers = cfg.train.num_workers
 
     loader = DataLoader(
-        TriplesNPZ(os.path.join(dd, f"{split}.npz")),
+        TransitionsDataset(os.path.join(dd, f"{split}.npz")),
         batch_size=eval_batch_size,
         shuffle=False,
         num_workers=num_workers,
@@ -118,23 +118,23 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str, split: str = "test"):
     mse = torch.nn.MSELoss()
 
     for batch in loader:
-        s, sp, a, a1h, sig, sig_next = _unpack_batch(
-            batch, device, cfg.data.num_actions
+        obs, obs_next, action = _unpack_transition(batch, device, cfg.data.num_actions)
+        signal, signal_next = (
+            batch["signal"].to(device),
+            batch["signal_next"].to(device),
         )
-        batch_size = s.size(0)
+        batch_size = obs.size(0)
 
         with torch.no_grad():
-            z = encode(s)
-            z_next = encode(sp)
-            z_next_pred = dyn(z, a1h)
+            z = encode(obs)
+            z_next = encode(obs_next)
+            z_next_pred = dyn(z, action)
 
             signal_pred = probe(z)
-            signal_true = s[:, : cfg.data.signal_dim]
             signal_next_pred = probe(z_next_pred)
-            signal_next_true = sp[:, : cfg.data.signal_dim]
 
-            mse_signal_next = mse(signal_next_pred, signal_next_true).item()
-            mse_signal = mse(signal_pred, signal_true).item()
+            mse_signal_next = mse(signal_next_pred, signal_next).item()
+            mse_signal = mse(signal_pred, signal).item()
             mse_znext_znextpred = mse(z_next, z_next_pred).item()
             mse_z_znext = mse(z, z_next).item()
 

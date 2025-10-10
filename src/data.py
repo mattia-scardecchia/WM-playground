@@ -27,20 +27,12 @@ class BaseEnv(ABC):
     static_noise: bool
 
     @abstractmethod
-    def init_state(self, N: int) -> Tuple[np.ndarray, np.ndarray]:
+    def init_state(self, N: int) -> Dict[str, np.ndarray]:
         pass
 
     @abstractmethod
-    def step(self, s: np.ndarray, a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Advance state given actions.
-
-        For compatibility the method may return either:
-          - next_observed_state (np.ndarray)
-        or
-          - (next_latent, next_observed_state) as a tuple of np.ndarrays
-        Concrete envs should document what they return; DataManager and the
-        trajectory generation helper will handle both cases.
-        """
+    def step(self, state: np.ndarray, action: np.ndarray) -> Dict[str, np.ndarray]:
+        """Advance state given action. Returns a dictionary with keys "state", "observation", "signal"."""
         pass
 
     @classmethod
@@ -86,21 +78,28 @@ class LegacyVectorWorld(BaseEnv):
             static_noise=cfg.static_noise,
         )
 
-    def init_state(self, N: int) -> Tuple[np.ndarray, np.ndarray]:
+    def init_state(self, N: int) -> Dict[str, np.ndarray]:
         signal = self.rng.randn(N, self.signal_dim)
         noise = self.rng.randn(N, self.noise_dim)
-        return np.concatenate([signal, noise], axis=1), signal
+        state = np.concatenate([signal, noise], axis=1)
+        out = {"state": state, "observation": state.copy(), "signal": signal.copy()}
+        return out
 
-    def step(self, s: np.ndarray, a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        sig = s[:, : self.signal_dim].copy()
+    def step(self, state: np.ndarray, action: np.ndarray) -> Dict[str, np.ndarray]:
+        signal = state[:, : self.signal_dim].copy()
 
-        sig_next = sig + a
+        signal_next = signal + action
         if self.static_noise:
-            noise_next = s[:, self.signal_dim :].copy()
+            noise_next = state[:, self.signal_dim :].copy()
         else:
-            noise_next = self.rng.randn(s.shape[0], self.noise_dim)
-        sp = np.concatenate([sig_next, noise_next], axis=1)
-        return sp, sig_next
+            noise_next = self.rng.randn(state.shape[0], self.noise_dim)
+        state_next = np.concatenate([signal_next, noise_next], axis=1)
+        out = {
+            "state": state_next,
+            "observation": state_next.copy(),
+            "signal": signal_next.copy(),
+        }
+        return out
 
 
 class LatentVectorWorld(BaseEnv):
@@ -157,41 +156,47 @@ class LatentVectorWorld(BaseEnv):
         )
 
     def project(self, x: np.ndarray) -> np.ndarray:
-        """Project low-dim concatenated state into higher-dim latent using fixed random MLP.
-
-        Args:
-            x: shape (N, input_dim)
-        Returns:
-            z: shape (N, proj_dim)
-        """
+        """Project low-dim concatenated state into higher-dim latent using fixed random MLP. Standardize output."""
         h = np.tanh(x.dot(self.W1) + self.b1)
         z = h.dot(self.W2) + self.b2
-        z = z.astype(np.float32)
-        norms = np.linalg.norm(z, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        z = z / norms
+        z = (z - z.mean(axis=1, keepdims=True)) / z.std(axis=1, keepdims=True)
         return z
 
-    def init_state(self, N: int) -> Tuple[np.ndarray, np.ndarray]:
+    def init_state(self, N: int) -> Dict[str, np.ndarray]:
         signal = self.rng.randn(N, self.signal_dim)
         static = self.rng.randn(N, self.static_noise_dim)
         memoryless = self.rng.randn(N, self.memoryless_noise_dim)
-        latent_state = np.concatenate([signal, static, memoryless], axis=1)
-        observed_state = self.project(latent_state)
-        return observed_state, signal
+        state = np.concatenate([signal, static, memoryless], axis=1)
+        observation = self.project(state)
+        out = {"state": state, "observation": observation, "signal": signal}
+        return out
 
-    def step(self, s: np.ndarray, a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        N = s.shape[0]
-        sig = s[:, : self.signal_dim].copy()
-        static = s[:, self.signal_dim : self.signal_dim + self.static_noise_dim].copy()
+    def step(self, state: np.ndarray, action: np.ndarray) -> Dict[str, np.ndarray]:
+        signal = state[:, : self.signal_dim]
+        signal_next = signal + action
+        static_next = state[
+            :, self.signal_dim : self.signal_dim + self.static_noise_dim
+        ]
+        memoryless_next = self.rng.randn(state.shape[0], self.memoryless_noise_dim)
+        state_next = np.concatenate([signal_next, static_next, memoryless_next], axis=1)
+        observation_next = self.project(state_next)
+        out = {
+            "state": state_next,
+            "observation": observation_next,
+            "signal": signal_next,
+        }
+        return out
 
-        sig_next = sig + a
-        static_next = static
-        mem_next = self.rng.randn(N, self.memoryless_noise_dim)
-        sp_latent = np.concatenate([sig_next, static_next, mem_next], axis=1)
-        sp_observed = self.project(sp_latent)
 
-        return sp_observed, sig_next
+def discrete2continuous_action(
+    a_discrete: np.ndarray, signal_dim: int, step_size: float
+):
+    N = int(a_discrete.shape[0])
+    a_cont = np.zeros((N, signal_dim), dtype=np.float32)
+    coords = a_discrete.astype(np.int32) % signal_dim
+    signs = np.where(a_discrete < signal_dim, 1.0, -1.0)
+    a_cont[np.arange(N), coords] = signs * step_size
+    return a_discrete, a_cont
 
 
 def sample_trajectories(
@@ -201,74 +206,82 @@ def sample_trajectories(
     policy: str = "random-discrete",
 ) -> Dict[str, np.ndarray]:
     """Generic trajectory generator using env.init_state and env.step. The env.step must return (next_state, signal_next)."""
-    N = n_traj
-    T = traj_len
-    s_list, a_list, sp_list = [], [], []
-    sig_list, sig_next_list = [], []
+    st_list, obs_list, sig_list, ac_list, snxt_list, obsnxt_list, signxt_list = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
+    init_dict = env.init_state(n_traj)
+    state, signal, obs = (
+        init_dict["state"],
+        init_dict["signal"],
+        init_dict["observation"],
+    )
 
-    s, sig = env.init_state(N)
-
-    for _ in range(T):
-        rng = env.rng
-        sig_dim = env.signal_dim
-
+    for _ in range(traj_len):
         if policy == "random-discrete":
-            num_actions = 2 * sig_dim
-            a_discrete = rng.randint(0, num_actions, size=(N,))
-            a_cont = np.zeros((N, sig_dim), dtype=np.float32)
-            coords = a_discrete % sig_dim
-            signs = np.where(a_discrete < sig_dim, 1.0, -1.0)
-            a_cont[np.arange(N), coords] = signs * env.step_size
-            a_to_store = a_discrete
+            num_actions = 2 * env.signal_dim
+            a_discrete = env.rng.randint(0, num_actions, size=(n_traj,))
+            a_to_store, a_to_pass = discrete2continuous_action(
+                a_discrete=a_discrete,
+                signal_dim=env.signal_dim,
+                step_size=env.step_size,
+            )
         else:
             raise ValueError(f"Unknown policy: {policy}")
+        next_dict = env.step(state, a_to_pass)
 
-        sp, sig_next = env.step(s, a_cont)
+        st_list.append(state)
+        sig_list.append(signal)
+        obs_list.append(obs)
+        ac_list.append(a_to_store)
+        snxt_list.append(next_dict["state"])
+        signxt_list.append(next_dict["signal"])
+        obsnxt_list.append(next_dict["observation"])
 
-        s_list.append(s.copy())
-        a_list.append(a_to_store.copy())
-        sp_list.append(sp.copy())
-        sig_list.append(sig)
-        sig_next_list.append(sig_next)
-
-        s = sp
-        sig = sig_next
-
-    s_arr = np.concatenate(s_list, axis=0).astype(np.float32)
-    a_arr = np.concatenate(a_list, axis=0).astype(np.float32)
-    sp_arr = np.concatenate(sp_list, axis=0).astype(np.float32)
-    sig_arr = np.concatenate(sig_list, axis=0).astype(np.float32)
-    sig_next_arr = np.concatenate(sig_next_list, axis=0).astype(np.float32)
+        state = next_dict["state"]
+        signal = next_dict["signal"]
+        obs = next_dict["observation"]
 
     out = {
-        "s": s_arr,
-        "a": a_arr,
-        "sp": sp_arr,
-        "sig": sig_arr,
-        "sig_next": sig_next_arr,
+        "state": np.concatenate(st_list, axis=0).astype(np.float32),
+        "action": np.concatenate(ac_list, axis=0).astype(np.float32),
+        "observation": np.concatenate(obs_list, axis=0).astype(np.float32),
+        "state_next": np.concatenate(snxt_list, axis=0).astype(np.float32),
+        "observation_next": np.concatenate(obsnxt_list, axis=0).astype(np.float32),
+        "signal": np.concatenate(sig_list, axis=0).astype(np.float32),
+        "signal_next": np.concatenate(signxt_list, axis=0).astype(np.float32),
     }
     return out
 
 
-class TriplesNPZ(Dataset):
+class TransitionsDataset(Dataset):
     def __init__(self, path: str):
         data = np.load(path)
-        self.s = torch.from_numpy(data["s"])
-        self.a = torch.from_numpy(data["a"])
-        self.sp = torch.from_numpy(data["sp"])
-        self.sig = torch.from_numpy(data["sig"])
-        self.sig_next = torch.from_numpy(data["sig_next"])
+        self.state = torch.from_numpy(data["state"])
+        self.action = torch.from_numpy(data["action"])
+        self.observation = torch.from_numpy(data["observation"])
+        self.state_next = torch.from_numpy(data["state_next"])
+        self.observation_next = torch.from_numpy(data["observation_next"])
+        self.signal = torch.from_numpy(data["signal"])
+        self.signal_next = torch.from_numpy(data["signal_next"])
 
     def __len__(self) -> int:
-        return self.s.shape[0]
+        return self.state.shape[0]
 
     def __getitem__(self, i: int):
         return {
-            "s": self.s[i],
-            "a": self.a[i],
-            "sp": self.sp[i],
-            "sig": self.sig[i],
-            "sig_next": self.sig_next[i],
+            "state": self.state[i],
+            "action": self.action[i],
+            "observation": self.observation[i],
+            "state_next": self.state_next[i],
+            "observation_next": self.observation_next[i],
+            "signal": self.signal[i],
+            "signal_next": self.signal_next[i],
         }
 
 
@@ -368,7 +381,7 @@ class DataManager:
             ("test", self.cfg.data.n_test),
         ]
         for split_name, n_traj in splits:
-            triples = sample_trajectories(
+            trajs = sample_trajectories(
                 env,
                 n_traj=n_traj,
                 traj_len=self.cfg.data.traj_len,
@@ -377,17 +390,20 @@ class DataManager:
             path = self.data_dir / f"{split_name}.npz"
             np.savez_compressed(
                 str(path),
-                s=triples["s"],
-                a=triples["a"],
-                sp=triples["sp"],
-                sig=triples["sig"],
-                sig_next=triples["sig_next"],
+                state=trajs["state"],
+                action=trajs["action"],
+                observation=trajs["observation"],
+                state_next=trajs["state_next"],
+                observation_next=trajs["observation_next"],
+                signal=trajs["signal"],
+                signal_next=trajs["signal_next"],
             )
 
             logging.info(
-                f"Generated {split_name} data: {path} with shapes s{triples['s'].shape}, "
-                f"a{triples['a'].shape}, sp{triples['sp'].shape}, sig{triples['sig'].shape}, "
-                f"sig_next{triples['sig_next'].shape}"
+                f"Generated {split_name} data: {path} with shapes "
+                f"state{trajs['state'].shape}, action{trajs['action'].shape}, "
+                f"state_next{trajs['state_next'].shape}, signal{trajs['signal'].shape}, "
+                f"signal_next{trajs['signal_next'].shape}"
             )
         self._save_config_and_metadata()
 
@@ -423,7 +439,7 @@ class DataManager:
         )
 
         train_loader = DataLoader(
-            TriplesNPZ(str(self.data_dir / "train.npz")),
+            TransitionsDataset(str(self.data_dir / "train.npz")),
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
@@ -431,7 +447,7 @@ class DataManager:
         )
 
         val_loader = DataLoader(
-            TriplesNPZ(str(self.data_dir / "val.npz")),
+            TransitionsDataset(str(self.data_dir / "val.npz")),
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
@@ -446,7 +462,7 @@ class DataManager:
         num_workers = self.cfg.train.num_workers
 
         return DataLoader(
-            TriplesNPZ(str(self.data_dir / "test.npz")),
+            TransitionsDataset(str(self.data_dir / "test.npz")),
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,

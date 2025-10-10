@@ -9,19 +9,14 @@ from abc import ABC, abstractmethod
 from utils import make_mlp, to_onehot
 
 
-def _unpack_batch(
+def _unpack_transition(
     batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int
-) -> Tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
-]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Helper function to prepare batch data for dynamics and contrastive models"""
-    s = batch["s"].to(device)
-    sp = batch["sp"].to(device)
-    a = batch["a"].to(device)
-    a1h = to_onehot(a, num_actions).to(device)
-    sig = batch["sig"].to(device)
-    sig_next = batch["sig_next"].to(device)
-    return s, sp, a, a1h, sig, sig_next
+    observation = batch["observation"].to(device)
+    action_onehot = to_onehot(batch["action"], num_actions).to(device)
+    observation_next = batch["observation_next"].to(device)
+    return observation, observation_next, action_onehot
 
 
 class TrainableModel(nn.Module, ABC):
@@ -119,7 +114,7 @@ class VAE(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        x = batch["s"].to(device)
+        x = batch["observation"].to(device)
         x_hat, mu, logvar, z = self(x)
         loss, parts = beta_vae_loss(x_hat, x, mu, logvar, self.beta)
 
@@ -133,7 +128,7 @@ class VAE(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        x = batch["s"].to(device)
+        x = batch["observation"].to(device)
         x_hat, mu, logvar, z = self(x)
         loss, parts = beta_vae_loss(x_hat, x, mu, logvar, self.beta)
 
@@ -235,14 +230,14 @@ class NachumConstrastive(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h, sig, sig_next = _unpack_batch(
+        obs, obs_next, action = _unpack_transition(
             batch,
             device,
             self.num_actions,
         )
 
-        z = self.phi(s)  # B, D
-        zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
+        z = self.phi(obs)  # B, D
+        zpos = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
         diff = z[:, None, :] - zpos[None, :, :]  # B, B, D
         logits = -torch.sum(diff**2, dim=-1) / self.temperature
         target = torch.arange(z.size(0), device=device)
@@ -254,10 +249,10 @@ class NachumConstrastive(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h, sig, sig_next = _unpack_batch(batch, device, self.num_actions)
+        obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
 
-        z = self.phi(s)  # B, D
-        zpos = self.g(torch.cat([sp, a1h], dim=-1))  # B, D
+        z = self.phi(obs)  # B, D
+        zpos = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
         diff = z[:, None, :] - zpos[None, :, :]  # B, B, D
         logits = -torch.sum(diff**2, dim=-1) / self.temperature
         target = torch.arange(z.size(0), device=device)
@@ -314,13 +309,13 @@ class DynamicsModel(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h, sig, sig_next = _unpack_batch(batch, device, self.num_actions)
+        obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
 
         with torch.no_grad():
-            z = self.encoder_fn(s)  # type: ignore
-            z_next_true = self.encoder_fn(sp)  # type: ignore
+            z = self.encoder_fn(obs)  # type: ignore
+            z_next_true = self.encoder_fn(obs_next)  # type: ignore
 
-        z_next_pred = self(z, a1h)
+        z_next_pred = self(z, action)
         loss = self.mse(z_next_pred, z_next_true)
 
         metrics = {"train_mse": loss.item()}
@@ -329,13 +324,13 @@ class DynamicsModel(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s, sp, a, a1h, sig, sig_next = _unpack_batch(batch, device, self.num_actions)
+        obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
 
         with torch.no_grad():
-            z = self.encoder_fn(s)  # type: ignore
-            z_next_true = self.encoder_fn(sp)  # type: ignore
+            z = self.encoder_fn(obs)  # type: ignore
+            z_next_true = self.encoder_fn(obs_next)  # type: ignore
 
-        z_next_pred = self(z, a1h)
+        z_next_pred = self(z, action)
         loss = self.mse(z_next_pred, z_next_true)
 
         metrics = {"val_mse": loss.item()}
@@ -393,14 +388,14 @@ class Probe(TrainableModel):
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s = batch["s"].to(device)
-        pos_true = batch["sig"].to(device)
+        obs = batch["observation"].to(device)
+        signal_true = batch["signal"].to(device)
 
         with torch.no_grad():
-            z = self.encoder_fn(s)  # type: ignore
+            z = self.encoder_fn(obs)  # type: ignore
 
-        pos_pred = self(z)
-        loss = self.mse(pos_pred, pos_true)
+        signal_pred = self(z)
+        loss = self.mse(signal_pred, signal_true)
 
         metrics = {"train_mse": loss.item()}
         return loss, metrics
@@ -408,14 +403,14 @@ class Probe(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        s = batch["s"].to(device)
-        pos_true = batch["sig"].to(device)
+        obs = batch["observation"].to(device)
+        signal_true = batch["signal"].to(device)
 
         with torch.no_grad():
-            z = self.encoder_fn(s)  # type: ignore
+            z = self.encoder_fn(obs)  # type: ignore
 
-        pos_pred = self(z)
-        loss = self.mse(pos_pred, pos_true)
+        signal_pred = self(z)
+        loss = self.mse(signal_pred, signal_true)
 
         metrics = {"val_mse": loss.item()}
         return loss, metrics
