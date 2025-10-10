@@ -1,4 +1,3 @@
-from tkinter import E
 from typing import Callable, List, Sequence, Dict, Any, Tuple, Optional, Union
 import os
 import torch
@@ -288,11 +287,11 @@ class DynamicsModel(TrainableModel):
         z_dim: int,
         num_actions: int,
         widths,
-        z_space: str,
+        repr_method: str,
         activation: str = "relu",
     ):
         super().__init__()
-        self.z_space = z_space
+        self.repr_method = repr_method
         self.z_dim = z_dim
         self.num_actions = num_actions
         self.net = make_mlp([z_dim + num_actions] + list(widths) + [z_dim], activation)
@@ -366,15 +365,15 @@ class Probe(TrainableModel):
         self,
         z_dim: int,
         signal_dim: int,
-        z_space: str,
+        repr_method: str,
         widths=(64, 64),
         activation: str = "relu",
     ):
         super().__init__()
         self.z_dim = z_dim
         self.signal_dim = signal_dim
-        self.z_space = z_space
-        self.net = make_mlp([z_dim] + list(widths) + [2], activation)
+        self.repr_method = repr_method
+        self.net = make_mlp([z_dim] + list(widths) + [signal_dim], activation)
         self.mse = nn.MSELoss()
         self.encoder_fn = None  # Will be set during training setup
 

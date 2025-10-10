@@ -1,6 +1,5 @@
 import os
 import argparse
-import signal
 import yaml
 import wandb
 import torch
@@ -69,7 +68,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
         z_dim,
         cfg.data.num_actions,
         cfg.model.dynamics.dyn_widths,
-        z_space=repr_method,
+        repr_method=repr_method,
         activation=cfg.model.dynamics.activation,
     )
     dyn.load_state_dict(
@@ -84,7 +83,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
     probe = Probe(
         z_dim,
         cfg.data.signal_dim,
-        z_space=repr_method,
+        repr_method=repr_method,
         widths=cfg.model.probe.probe_widths,
         activation=cfg.model.probe.activation,
     )

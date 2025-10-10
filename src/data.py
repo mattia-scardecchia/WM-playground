@@ -53,11 +53,11 @@ class LegacyVectorWorld(BaseEnv):
 
     def __init__(
         self,
-        signal_dim: int = 2,
-        noise_dim: int = 100,
-        step: float = 1.0,
-        seed: int = 0,
-        static_noise: bool = False,
+        signal_dim: int,
+        noise_dim: int,
+        step: float,
+        seed: int,
+        static_noise: bool,
     ):
         assert signal_dim == 2
         self.seed = seed

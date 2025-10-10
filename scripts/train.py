@@ -60,19 +60,19 @@ def create_dynamics(
         z_dim,
         cfg.data.num_actions,
         dynamics_cfg.dyn_widths,
-        z_space=z_space,
+        repr_method=z_space,
         activation=dynamics_cfg.activation,
     ).to(device)
 
 
-def create_probe(cfg: DictConfig, device: torch.device, z_space: str) -> Probe:
+def create_probe(cfg: DictConfig, device: torch.device, repr_method: str) -> Probe:
     """Create Probe model from config"""
     z_dim = cfg.model.repr.z_dim
     probe_cfg = cfg.model.probe
     return Probe(
         z_dim,
         cfg.data.signal_dim,
-        z_space=z_space,
+        repr_method=repr_method,
         widths=probe_cfg.probe_widths,
         activation=probe_cfg.activation,
     ).to(device)
