@@ -131,7 +131,7 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
         batch_size=cfg.train.vae.batch_size
     )
     model = create_vae(cfg, device)
-    trainer = GenericTrainer(cfg, device, wb)
+    trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
 
     final_metrics = trainer.train(
         model,
@@ -149,7 +149,7 @@ def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
         batch_size=cfg.train.contrastive.batch_size
     )
     model = create_nachum_contrastive(cfg, device)
-    trainer = GenericTrainer(cfg, device, wb)
+    trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
 
     final_metrics = trainer.train(
         model,
@@ -189,7 +189,7 @@ def train_phase2_dynamics(
 
     model = create_dynamics(cfg, device, repr_method)
     model.set_encoder(encoder_fn)
-    trainer = GenericTrainer(cfg, device, wb)
+    trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
     final_metrics = trainer.train(
         model, train_loader, val_loader, cfg.train.epochs_phase2
     )
@@ -224,7 +224,7 @@ def train_probes(
 
     model = create_probe(cfg, device, repr_method)
     model.set_encoder(encoder_fn)
-    trainer = GenericTrainer(cfg, device, wb)
+    trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
     final_metrics = trainer.train(
         model, train_loader, val_loader, cfg.train.epochs_probe
     )
@@ -242,10 +242,11 @@ def main(cfg: DictConfig) -> None:
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
 
-    # Set checkpoint directory to hydra output directory
+    # Resolve relative paths based on hydra output dir
     hydra_cfg = HydraConfig.get()
     hydra_output_dir = hydra_cfg.runtime.output_dir
-    cfg.train.ckpt_dir = os.path.join(hydra_output_dir, "ckpts")
+    cfg.train.ckpt_dir = os.path.join(hydra_output_dir, cfg.train.ckpt_dir)
+    cfg.profiler.log_dir = os.path.join(hydra_output_dir, cfg.profiler.log_dir)
 
     logging.info("=== Configuration ===")
     logging.info(f"\n{OmegaConf.to_yaml(cfg)}")

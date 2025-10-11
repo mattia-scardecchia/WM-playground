@@ -6,15 +6,20 @@ import wandb
 from torch.utils.data import DataLoader
 from typing import Dict, Any, Union, Optional
 from utils import AverageMeter
+from torch.profiler import profile, ProfilerActivity, tensorboard_trace_handler
 
 
 class GenericTrainer:
     """Generic trainer that works with any TrainableModel"""
 
-    def __init__(self, cfg: Any, device: torch.device, wb: Optional[Any] = None):
+    def __init__(
+        self, cfg: Any, device: torch.device, id: str, wb: Optional[Any] = None
+    ):
         self.cfg = cfg
         self.device = device
+        self.id = id
         self.wb = wb
+        self.profile = cfg.profiler.enabled
 
     def setup_optimizer(
         self, model: TrainableModel, opt_config: Dict[str, Any]
@@ -33,6 +38,40 @@ class GenericTrainer:
         model: TrainableModel,
         train_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
+        use_profiler: bool = False,
+    ) -> Dict[str, float]:
+        """Train for one epoch with optional profiling"""
+        if not use_profiler:
+            return self._train_epoch(model, train_loader, optimizer, profiler=None)
+
+        activities = [ProfilerActivity.CPU]
+        if self.device.type == "cuda":
+            activities += [ProfilerActivity.CUDA]
+
+        with profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(
+                wait=self.cfg.profiler.wait,
+                warmup=self.cfg.profiler.warmup,
+                active=self.cfg.profiler.active,
+                repeat=self.cfg.profiler.repeat,
+            ),
+            on_trace_ready=tensorboard_trace_handler(
+                os.path.join(self.cfg.profiler.log_dir, self.id)
+            ),
+            record_shapes=self.cfg.profiler.record_shapes,
+            with_stack=self.cfg.profiler.with_stack,
+            with_flops=self.cfg.profiler.with_flops,
+            profile_memory=self.cfg.profiler.profile_memory,
+        ) as p:
+            return self._train_epoch(model, train_loader, optimizer, profiler=p)
+
+    def _train_epoch(
+        self,
+        model: TrainableModel,
+        train_loader: DataLoader,
+        optimizer: torch.optim.Optimizer,
+        profiler: Optional[Any] = None,
     ) -> Dict[str, float]:
         """Train for one epoch and return averaged metrics"""
         model.train()
@@ -54,6 +93,9 @@ class GenericTrainer:
 
             batch_size = batch["state"].size(0)
             meter.update(metrics, {key: batch_size for key in metrics.keys()})
+
+            if profiler is not None:
+                profiler.step()
 
         return meter.avg
 
@@ -141,7 +183,10 @@ class GenericTrainer:
         final_metrics, train_metrics, val_metrics = {}, {}, {}
 
         for epoch in range(num_epochs):
-            train_metrics = self.train_epoch(model, train_loader, optimizer)
+            use_profiler = self.profile and (epoch == 0)
+            train_metrics = self.train_epoch(
+                model, train_loader, optimizer, use_profiler=use_profiler
+            )
             self.log_epoch(model, epoch, train_metrics, phase="train")
             val_metrics = self.eval_epoch(model, val_loader)
             self.log_epoch(model, epoch, val_metrics, phase="val")

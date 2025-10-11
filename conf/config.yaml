@@ -6,6 +6,7 @@ defaults:
   - model/probe: base
   - train: base
   - wandb: base
+  - profiler: base
   - _self_
 
 method: "vae" # "vae" or "contrastive"

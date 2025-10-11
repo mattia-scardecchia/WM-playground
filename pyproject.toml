@@ -22,6 +22,8 @@ dev = [
     "jupyter",
     "ipykernel",
     "pytest",
+    "tensorboard",
+    "torch-tb-profiler",
 ]
 
 [tool.setuptools.packages.find]

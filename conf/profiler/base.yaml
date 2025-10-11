@@ -1,0 +1,12 @@
+enabled: false
+log_dir: "profiler/" # relative path within hydra output dir
+
+wait: 1
+warmup: 1
+active: 2
+repeat: 1
+
+record_shapes: true
+with_stack: true
+with_flops: true
+profile_memory: true

@@ -236,5 +236,5 @@ if __name__ == "__main__":
         cfg=cfg,
         repr_method=args.zdim,
         wb=None,
-        ckpt_dir=os.path.join(args.hydra_output_dir, "ckpts"),
+        ckpt_dir=os.path.join(args.hydra_output_dir, cfg.train.ckpt_dir),
     )
