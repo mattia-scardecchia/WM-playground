@@ -223,25 +223,21 @@ class NachumConstrastive(TrainableModel):
     def forward(self, s):
         return self.phi(s)
 
-    def project_next(self, sp, a_onehot):
-        return self.g(torch.cat([sp, a_onehot], dim=-1))
+    def contrastive_loss(self, obs, obs_next, action, device):
+        # Implementation 1: s uses own (s', a) as positive, other (s', a) in batch as negatives. no clear EBM interpretation.
+        query = self.phi(obs)  # B, D
+        keys = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
+        diff = query[:, None, :] - keys[None, :, :]  # B, B, D
+        logits = -torch.sum(diff**2, dim=-1) / self.temperature
+        target = torch.arange(query.size(0), device=device)
+        loss = F.cross_entropy(logits, target)
+        return loss
 
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        obs, obs_next, action = _unpack_transition(
-            batch,
-            device,
-            self.num_actions,
-        )
-
-        z = self.phi(obs)  # B, D
-        zpos = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
-        diff = z[:, None, :] - zpos[None, :, :]  # B, B, D
-        logits = -torch.sum(diff**2, dim=-1) / self.temperature
-        target = torch.arange(z.size(0), device=device)
-        loss = F.cross_entropy(logits, target)
-
+        obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
+        loss = self.contrastive_loss(obs, obs_next, action, device)
         metrics = {"train_loss": loss.item()}
         return loss, metrics
 
@@ -249,14 +245,7 @@ class NachumConstrastive(TrainableModel):
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
-
-        z = self.phi(obs)  # B, D
-        zpos = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
-        diff = z[:, None, :] - zpos[None, :, :]  # B, B, D
-        logits = -torch.sum(diff**2, dim=-1) / self.temperature
-        target = torch.arange(z.size(0), device=device)
-        loss = F.cross_entropy(logits, target)
-
+        loss = self.contrastive_loss(obs, obs_next, action, device)
         metrics = {"val_loss": loss.item()}
         return loss, metrics
 
