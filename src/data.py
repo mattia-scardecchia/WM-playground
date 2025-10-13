@@ -191,11 +191,13 @@ class LatentVectorWorld(BaseEnv):
 def discrete2continuous_action(
     a_discrete: np.ndarray, signal_dim: int, step_size: float
 ):
-    N = int(a_discrete.shape[0])
-    a_cont = np.zeros((N, signal_dim), dtype=np.float32)
+    B = int(a_discrete.shape[0])
+    a_cont = np.zeros((B, signal_dim), dtype=np.float32)
     coords = a_discrete.astype(np.int32) % signal_dim
     signs = np.where(a_discrete < signal_dim, 1.0, -1.0)
-    a_cont[np.arange(N), coords] = signs * step_size
+    coords = coords.reshape(B)
+    signs = signs.reshape(B)
+    a_cont[np.arange(B), coords] = signs * step_size
     return a_discrete, a_cont
 
 
@@ -248,27 +250,31 @@ def sample_trajectories(
         obs = next_dict["observation"]
 
     out = {
-        "state": np.concatenate(st_list, axis=0).astype(np.float32),
-        "action": np.concatenate(ac_list, axis=0).astype(np.float32),
-        "observation": np.concatenate(obs_list, axis=0).astype(np.float32),
-        "state_next": np.concatenate(snxt_list, axis=0).astype(np.float32),
-        "observation_next": np.concatenate(obsnxt_list, axis=0).astype(np.float32),
-        "signal": np.concatenate(sig_list, axis=0).astype(np.float32),
-        "signal_next": np.concatenate(signxt_list, axis=0).astype(np.float32),
+        "state": np.stack(st_list, axis=0).astype(np.float32),
+        "action": np.stack(ac_list, axis=0).astype(np.float32),
+        "observation": np.stack(obs_list, axis=0).astype(np.float32),
+        "state_next": np.stack(snxt_list, axis=0).astype(np.float32),
+        "observation_next": np.stack(obsnxt_list, axis=0).astype(np.float32),
+        "signal": np.stack(sig_list, axis=0).astype(np.float32),
+        "signal_next": np.stack(signxt_list, axis=0).astype(np.float32),
     }
-    return out
+    return out  # T, B, ...
 
 
 class TransitionsDataset(Dataset):
     def __init__(self, path: str):
         data = np.load(path)
-        self.state = torch.from_numpy(data["state"])
-        self.action = torch.from_numpy(data["action"])
-        self.observation = torch.from_numpy(data["observation"])
-        self.state_next = torch.from_numpy(data["state_next"])
-        self.observation_next = torch.from_numpy(data["observation_next"])
-        self.signal = torch.from_numpy(data["signal"])
-        self.signal_next = torch.from_numpy(data["signal_next"])
+        B, T, _ = torch.from_numpy(data["state"]).shape
+
+        self.state = torch.from_numpy(data["state"]).reshape(B * T, -1)
+        self.action = torch.from_numpy(data["action"]).reshape(B * T, -1)
+        self.observation = torch.from_numpy(data["observation"]).reshape(B * T, -1)
+        self.state_next = torch.from_numpy(data["state_next"]).reshape(B * T, -1)
+        self.observation_next = torch.from_numpy(data["observation_next"]).reshape(
+            B * T, -1
+        )
+        self.signal = torch.from_numpy(data["signal"]).reshape(B * T, -1)
+        self.signal_next = torch.from_numpy(data["signal_next"]).reshape(B * T, -1)
 
     def __len__(self) -> int:
         return self.state.shape[0]

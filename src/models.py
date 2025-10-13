@@ -13,7 +13,8 @@ def _unpack_transition(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Helper function to prepare batch data for dynamics and contrastive models"""
     observation = batch["observation"].to(device)
-    action_onehot = to_onehot(batch["action"], num_actions).to(device)
+    B = observation.shape[0]
+    action_onehot = to_onehot(batch["action"].reshape((B,)), num_actions).to(device)
     observation_next = batch["observation_next"].to(device)
     return observation, observation_next, action_onehot
 
