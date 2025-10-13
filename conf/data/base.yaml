@@ -2,16 +2,16 @@ type: new # 'legacy' or 'new'
 policy: random-discrete
 out_dir: "data/"
 
-signal_dim: 30
+signal_dim: 2
 static_noise_dim: 0
 memoryless_noise_dim: 0
 state_dim: 100
 mlp_hidden_dim: 100
-traj_len: 2
+traj_len: 20
 num_actions: ???
 
 seed: 0
 step_size: 0.3
-n_train: 10000
-n_val: 1000
-n_test: 1000
+n_train: 1000
+n_val: 100
+n_test: 100

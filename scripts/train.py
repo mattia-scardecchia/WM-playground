@@ -26,7 +26,7 @@ def create_vae(cfg: DictConfig, device: torch.device) -> VAE:
         vae_cfg.z_dim,
         vae_cfg.enc_widths,
         vae_cfg.dec_widths,
-        beta=cfg.train.vae.beta,
+        beta=vae_cfg.beta,
         activation=vae_cfg.activation,
     ).to(device)
 
@@ -43,10 +43,12 @@ def create_nachum_contrastive(
         cfg.data.num_actions,
         contrastive_cfg.enc_widths,
         contrastive_cfg.proj_widths,
-        temperature=cfg.train.contrastive.temperature,
+        temperature=contrastive_cfg.temperature,
         eps=contrastive_cfg.eps,
         use_layer_norm=contrastive_cfg.use_layer_norm,
         activation=contrastive_cfg.activation,
+        k=contrastive_cfg.k,
+        alpha=contrastive_cfg.alpha,
     ).to(device)
 
 
@@ -137,7 +139,7 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
         model,
         train_loader,
         val_loader,
-        cfg.train.epochs_phase1,
+        cfg.train.steps_phase1,
     )
 
     return os.path.join(cfg.train.ckpt_dir, "enc_vae.pt"), final_metrics
@@ -146,7 +148,8 @@ def train_phase1_vae(cfg: DictConfig, device: torch.device, wb):
 def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
     """Contrastive training using GenericTrainer"""
     train_loader, val_loader = DataManager(cfg).get_data_loaders(
-        batch_size=cfg.train.contrastive.batch_size
+        k=cfg.model.contrastive.k,
+        batch_size=cfg.train.contrastive.batch_size,
     )
     model = create_nachum_contrastive(cfg, device)
     trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
@@ -155,7 +158,7 @@ def train_phase1_contrastive(cfg: DictConfig, device: torch.device, wb):
         model,
         train_loader,
         val_loader,
-        cfg.train.epochs_phase1,
+        cfg.train.steps_phase1,
     )
 
     phi_path = os.path.join(cfg.train.ckpt_dir, "contrastive_phi.pt")
@@ -191,7 +194,7 @@ def train_phase2_dynamics(
     model.set_encoder(encoder_fn)
     trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
     final_metrics = trainer.train(
-        model, train_loader, val_loader, cfg.train.epochs_phase2
+        model, train_loader, val_loader, cfg.train.steps_phase2
     )
 
     out_path = os.path.join(cfg.train.ckpt_dir, "dynamics.pt")
@@ -226,7 +229,7 @@ def train_probes(
     model.set_encoder(encoder_fn)
     trainer = GenericTrainer(cfg, device, id=model.id, wb=wb)
     final_metrics = trainer.train(
-        model, train_loader, val_loader, cfg.train.epochs_probe
+        model, train_loader, val_loader, cfg.train.steps_probe
     )
 
     out_path = os.path.join(cfg.train.ckpt_dir, "probe.pt")

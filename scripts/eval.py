@@ -6,7 +6,7 @@ import torch
 import logging
 from torch.utils.data import DataLoader
 
-from data import TransitionsDataset
+from data import TransitionDataset
 from models import VAE, NachumConstrastive, DynamicsModel, Probe, _unpack_transition
 from utils import seed_all, AverageMeter
 
@@ -23,7 +23,7 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
             z_dim,
             vae_cfg.enc_widths,
             vae_cfg.dec_widths,
-            beta=cfg.train.vae.beta,
+            beta=vae_cfg.beta,
             activation=vae_cfg.activation,
         )
         vae.load_state_dict(
@@ -45,10 +45,12 @@ def load_components(cfg, repr_method: str, device, ckpt_dir: str):
             cfg.data.num_actions,
             contrastive_cfg.enc_widths,
             contrastive_cfg.proj_widths,
-            temperature=cfg.train.contrastive.temperature,
+            temperature=contrastive_cfg.temperature,
             eps=contrastive_cfg.eps,
             use_layer_norm=contrastive_cfg.use_layer_norm,
             activation=contrastive_cfg.activation,
+            k=contrastive_cfg.k,
+            alpha=contrastive_cfg.alpha,
         )
         contrastive_model.load_state_dict(
             torch.load(
@@ -106,7 +108,7 @@ def evaluate(cfg, repr_method: str, device, ckpt_dir: str, split: str = "test"):
     num_workers = cfg.train.num_workers
 
     loader = DataLoader(
-        TransitionsDataset(os.path.join(dd, f"{split}.npz")),
+        TransitionDataset(os.path.join(dd, f"{split}.npz")),
         batch_size=eval_batch_size,
         shuffle=False,
         num_workers=num_workers,

@@ -5,16 +5,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
 
-from utils import make_mlp, to_onehot
+from utils import make_mlp
 
 
 def _unpack_transition(
     batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Helper function to prepare batch data for dynamics and contrastive models"""
+    """Helper function to prepare batch data. Works with data from TransitionDataset."""
     observation = batch["observation"].to(device)
-    B = observation.shape[0]
-    action_onehot = to_onehot(batch["action"].reshape((B,)), num_actions).to(device)
+    B, _ = observation.shape
+    action_onehot = (
+        torch.nn.functional.one_hot(
+            batch["action"].reshape((B,)).long(), num_classes=num_actions
+        )
+        .float()
+        .to(device)
+    )
+    observation_next = batch["observation_next"].to(device)
+    return observation, observation_next, action_onehot
+
+
+def _unpack_trajectory(
+    batch: Dict[str, torch.Tensor], device: torch.device, num_actions: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Helper function to prepare batch data. Works with data from TrajectoryDataset."""
+    observation = batch["observation"].to(device)  # B, T, D
+    B, T, _ = observation.shape
+    action_onehot = (
+        torch.nn.functional.one_hot(
+            batch["action"].reshape((B, T)).long(), num_classes=num_actions
+        )
+        .float()
+        .to(device)
+    )
     observation_next = batch["observation_next"].to(device)
     return observation, observation_next, action_onehot
 
@@ -198,12 +221,16 @@ class NachumConstrastive(TrainableModel):
         use_layer_norm: bool,
         eps: float,  # ignored if not use_layer_norm
         activation: str,
+        k: int,
+        alpha: float,  # ignored if k == 1
     ):
         super().__init__()
         self.x_dim = x_dim
         self.z_dim = z_dim
         self.num_actions = num_actions
         self.temperature = temperature
+        self.k = k
+        self.alpha = alpha
         self.phi = EncoderMLP(
             input_dim=x_dim,
             hidden_dims=list(enc_widths),
@@ -226,18 +253,65 @@ class NachumConstrastive(TrainableModel):
 
     def contrastive_loss(self, obs, obs_next, action, device):
         # Implementation 1: s uses own (s', a) as positive, other (s', a) in batch as negatives. no clear EBM interpretation.
-        query = self.phi(obs)  # B, D
-        keys = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
-        diff = query[:, None, :] - keys[None, :, :]  # B, B, D
-        logits = -torch.sum(diff**2, dim=-1) / self.temperature
-        target = torch.arange(query.size(0), device=device)
-        loss = F.cross_entropy(logits, target)
+        if self.k == 1:
+            query = self.phi(obs)  # B, D
+            keys = self.g(torch.cat([obs_next, action], dim=-1))  # B, D
+            diff = query[:, None, :] - keys[None, :, :]  # B, B, D
+            sim = -torch.sum(diff**2, dim=-1) / self.temperature  # B, B
+            target = torch.arange(query.size(0), device=device)
+            loss = F.cross_entropy(sim, target)
+        else:
+            B, T, _ = obs.shape
+            if self.alpha is None:
+                # Version 1: treat all negatives equally
+                idx = torch.randint(0, T, (B,), device=device)
+                query = self.phi(obs[torch.arange(B), idx])  # B, D
+                g_input = torch.cat([obs_next, action], dim=-1).reshape(B * T, -1)
+                keys = self.g(g_input).reshape(B, T, -1)  # B, T, D
+                diff = query[:, None, :] - keys  # B, T, D
+                logits = -torch.sum(diff**2, dim=-1) / self.temperature  # B, T
+                target = idx
+                loss = F.cross_entropy(logits, target)
+            else:
+                # Version 2: weigh negatives from same trajectory differently than those from other trajectories
+                idx = torch.randint(0, T, (B,), device=device)
+                query = self.phi(obs[torch.arange(B), idx])  # B, D
+                keys = self.g(torch.cat([obs_next, action], dim=-1).reshape(B * T, -1))
+                sim = -(torch.cdist(query, keys, 2) ** 2) / self.temperature  # B, B*T
+                sim = sim.reshape(B, B, T)
+
+                # traj_eq[b, b', t] is set to (b == b')
+                traj_eq = torch.zeros(B, B, dtype=torch.bool, device=device)
+                traj_eq[torch.arange(B), torch.arange(B)] = True
+                traj_eq = traj_eq.unsqueeze(-1).expand(B, B, T)
+
+                # time_neg[b, b', t] is set to (t != idx[b])
+                time_neg = ~F.one_hot(idx, num_classes=T).bool()
+                time_neg = time_neg.unsqueeze(1).expand(B, B, T)
+
+                def masked_logsumexp(a, mask):
+                    B, _, _ = a.shape
+                    a_masked = a.masked_fill(~mask, float("-inf"))
+                    return torch.logsumexp(a_masked.reshape(B, -1), dim=-1)
+
+                same_traj_neg = traj_eq & time_neg  # B, B, T
+                other_traj_neg = ~traj_eq  # B, B, T
+                loss_positive = -sim[torch.arange(B), torch.arange(B), idx]  # B,
+                loss_same_traj_neg = masked_logsumexp(sim, same_traj_neg)  # B,
+                loss_other_traj_neg = masked_logsumexp(sim, other_traj_neg)  # B,
+                loss_neg = (
+                    self.alpha * loss_same_traj_neg
+                    + (1 - self.alpha) * loss_other_traj_neg
+                )  # B,
+                loss = (loss_positive + loss_neg).mean()
+
         return loss
 
     def training_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
+        _unpack_batch = _unpack_transition if self.k == 1 else _unpack_trajectory
+        obs, obs_next, action = _unpack_batch(batch, device, self.num_actions)
         loss = self.contrastive_loss(obs, obs_next, action, device)
         metrics = {"train_loss": loss.item()}
         return loss, metrics
@@ -245,7 +319,8 @@ class NachumConstrastive(TrainableModel):
     def validation_step(
         self, batch: Dict[str, torch.Tensor], device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        obs, obs_next, action = _unpack_transition(batch, device, self.num_actions)
+        _unpack_batch = _unpack_transition if self.k == 1 else _unpack_trajectory
+        obs, obs_next, action = _unpack_batch(batch, device, self.num_actions)
         loss = self.contrastive_loss(obs, obs_next, action, device)
         metrics = {"val_loss": loss.item()}
         return loss, metrics

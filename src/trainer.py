@@ -127,14 +127,14 @@ class GenericTrainer:
         )
 
     def log_epoch(
-        self, model, epoch: int, metrics: Dict[str, float], phase: str = "train"
+        self, model, epoch: int, metrics: Dict[str, float], split: str = "train"
     ):
         """Log epoch results to console and wandb"""
         phase_name = model.id
         metrics_str = self._format_metrics(metrics)
 
         # Console logging
-        if phase == "val":
+        if split == "val":
             logging.info(f"[{phase_name.upper()}-VAL] Epoch {epoch + 1}: {metrics_str}")
         else:
             logging.info(f"[{phase_name.upper()}] Epoch {epoch + 1}: {metrics_str}")
@@ -143,7 +143,7 @@ class GenericTrainer:
         if self.wb is not None:
             wandb_metrics = {f"{phase_name}/{k}": v for k, v in metrics.items()}
             wandb_metrics.update({f"{phase_name}/epoch": epoch + 1})
-            commit = phase == "val"
+            commit = split == "val"
             wandb.log(wandb_metrics, commit=commit)
 
     def save_checkpoint(self, model) -> list:
@@ -170,10 +170,13 @@ class GenericTrainer:
         model: TrainableModel,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        num_epochs: int,
+        num_steps: int,
     ) -> Dict[str, float]:
         """Full training loop"""
-        logging.info(f"Starting training for {model.id} model ({num_epochs} epochs)")
+        num_epochs = num_steps // len(train_loader)
+        logging.info(
+            f"Starting training of {model.id} model ({num_steps} steps: {num_epochs} epochs...)"
+        )
         opt_config = model.get_optimizer_config(self.cfg)
         optimizer = self.setup_optimizer(model, opt_config)
         if self.wb is not None:
@@ -187,9 +190,12 @@ class GenericTrainer:
             train_metrics = self.train_epoch(
                 model, train_loader, optimizer, use_profiler=use_profiler
             )
-            self.log_epoch(model, epoch, train_metrics, phase="train")
+            wandb.log(
+                {f"{model.id}/steps": (epoch + 1) * len(train_loader)}, commit=False
+            )
+            self.log_epoch(model, epoch, train_metrics, split="train")
             val_metrics = self.eval_epoch(model, val_loader)
-            self.log_epoch(model, epoch, val_metrics, phase="val")
+            self.log_epoch(model, epoch, val_metrics, split="val")
 
         final_metrics = {
             f"final_{model.id}_train_{k}": v for k, v in train_metrics.items()

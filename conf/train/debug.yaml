@@ -1,6 +1,6 @@
-epochs_phase1: 1
-epochs_phase2: 1
-epochs_probe: 1
+steps_phase1: 10
+steps_phase2: 10
+steps_probe: 10
 num_workers: 0
 ckpt_dir: "ckpts/" # relative path within hydra output dir
 eval_batch_size: 512

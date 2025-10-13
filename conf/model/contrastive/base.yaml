@@ -1,6 +1,11 @@
-z_dim: 2
+z_dim: 30
 enc_widths: [256, 256]
 proj_widths: [256, 256]
 activation: "relu"
+temperature: 3.0
+
 use_layer_norm: true
 eps: 0.00001
+
+alpha: null # weighting factor for same/different trajectory negatives
+k: 1 # frames per trajectory in a batch

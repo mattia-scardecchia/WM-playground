@@ -261,20 +261,26 @@ def sample_trajectories(
     return out  # T, B, ...
 
 
-class TransitionsDataset(Dataset):
-    def __init__(self, path: str):
+class TransitionDataset(Dataset):
+    def __init__(self, path: str | Path):
         data = np.load(path)
-        B, T, _ = torch.from_numpy(data["state"]).shape
+        T, B, _ = torch.from_numpy(data["state"]).shape
 
-        self.state = torch.from_numpy(data["state"]).reshape(B * T, -1)
-        self.action = torch.from_numpy(data["action"]).reshape(B * T, -1)
-        self.observation = torch.from_numpy(data["observation"]).reshape(B * T, -1)
-        self.state_next = torch.from_numpy(data["state_next"]).reshape(B * T, -1)
-        self.observation_next = torch.from_numpy(data["observation_next"]).reshape(
-            B * T, -1
+        self.state = torch.from_numpy(data["state"]).reshape(B * T, -1).float()
+        self.action = torch.from_numpy(data["action"]).reshape(B * T, -1).float()
+        self.observation = (
+            torch.from_numpy(data["observation"]).reshape(B * T, -1).float()
         )
-        self.signal = torch.from_numpy(data["signal"]).reshape(B * T, -1)
-        self.signal_next = torch.from_numpy(data["signal_next"]).reshape(B * T, -1)
+        self.state_next = (
+            torch.from_numpy(data["state_next"]).reshape(B * T, -1).float()
+        )
+        self.observation_next = (
+            torch.from_numpy(data["observation_next"]).reshape(B * T, -1).float()
+        )
+        self.signal = torch.from_numpy(data["signal"]).reshape(B * T, -1).float()
+        self.signal_next = (
+            torch.from_numpy(data["signal_next"]).reshape(B * T, -1).float()
+        )
 
     def __len__(self) -> int:
         return self.state.shape[0]
@@ -288,6 +294,83 @@ class TransitionsDataset(Dataset):
             "observation_next": self.observation_next[i],
             "signal": self.signal[i],
             "signal_next": self.signal_next[i],
+        }
+
+
+class TrajectoryDataset(Dataset):
+    def __init__(self, path: str | Path):
+        data = np.load(path)
+        # All tensors have shape (B, T, ·)
+        self.state = torch.from_numpy(data["state"]).float().transpose(0, 1)
+        self.action = torch.from_numpy(data["action"]).float().transpose(0, 1)
+        self.observation = torch.from_numpy(data["observation"]).float().transpose(0, 1)
+        self.state_next = torch.from_numpy(data["state_next"]).float().transpose(0, 1)
+        self.observation_next = (
+            torch.from_numpy(data["observation_next"]).float().transpose(0, 1)
+        )
+        self.signal = torch.from_numpy(data["signal"]).float().transpose(0, 1)
+        self.signal_next = torch.from_numpy(data["signal_next"]).float().transpose(0, 1)
+
+    def __len__(self) -> int:
+        return self.state.shape[0]
+
+    def __getitem__(self, i: int):
+        return {
+            "state": self.state[i],
+            "action": self.action[i],
+            "observation": self.observation[i],
+            "state_next": self.state_next[i],
+            "observation_next": self.observation_next[i],
+            "signal": self.signal[i],
+            "signal_next": self.signal_next[i],
+        }
+
+
+class RandomKFramesDataset(Dataset):
+    """
+    Returns K distinct (non-contiguous) frames sampled without replacement
+    from each trajectory. Length = number of trajectories (B).
+    """
+
+    def __init__(self, path: str | Path, k: int, sort_indices: bool = True):
+        data = np.load(path)
+        # All tensors have shape (B, T, ·)
+        self.state = torch.from_numpy(data["state"]).float().transpose(0, 1)
+        self.action = torch.from_numpy(data["action"]).float().transpose(0, 1)
+        self.observation = torch.from_numpy(data["observation"]).float().transpose(0, 1)
+        self.state_next = torch.from_numpy(data["state_next"]).float().transpose(0, 1)
+        self.observation_next = (
+            torch.from_numpy(data["observation_next"]).float().transpose(0, 1)
+        )
+        self.signal = torch.from_numpy(data["signal"]).float().transpose(0, 1)
+        self.signal_next = torch.from_numpy(data["signal_next"]).float().transpose(0, 1)
+
+        self.B, self.T = self.state.shape[:2]
+        if k > self.T:
+            raise ValueError(f"K={k} cannot exceed trajectory length T={self.T}")
+        self.K = k
+        self.sort_indices = sort_indices
+
+    def __len__(self) -> int:
+        return self.B
+
+    def __getitem__(self, i: int):
+        idx = torch.randperm(self.T)[: self.K]
+        if self.sort_indices:
+            idx, _ = torch.sort(idx)
+
+        def gather(x):
+            return x[i].index_select(0, idx)
+
+        return {
+            "state": gather(self.state),
+            "action": gather(self.action),
+            "observation": gather(self.observation),
+            "state_next": gather(self.state_next),
+            "observation_next": gather(self.observation_next),
+            "signal": gather(self.signal),
+            "signal_next": gather(self.signal_next),
+            "t_idx": idx,
         }
 
 
@@ -305,7 +388,7 @@ class DataManager:
         self.config_path = self.data_dir / "data_config.yaml"
         self.metadata_path = self.data_dir / "metadata.json"
 
-    def get_data_loaders(self, batch_size: int) -> Tuple[DataLoader, DataLoader]:
+    def get_data_loaders(self, k=1, **kwargs) -> Tuple[DataLoader, DataLoader]:
         """
         Main entry point - returns train/val loaders, generating data if needed.
 
@@ -318,7 +401,7 @@ class DataManager:
         else:
             logging.info("Data config matches - using existing data")
 
-        return self._create_loaders(batch_size)
+        return self._create_loaders(k=k, **kwargs)
 
     def _should_regenerate_data(self) -> bool:
         """
@@ -436,28 +519,30 @@ class DataManager:
         config_str = json.dumps(config_dict, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()
 
-    def _create_loaders(self, batch_size: int) -> Tuple[DataLoader, DataLoader]:
+    def _create_loaders(self, k, **kwargs) -> Tuple[DataLoader, DataLoader]:
         """Create PyTorch data loaders from existing data."""
         num_workers = self.cfg.train.num_workers
-
-        logging.info(
-            f"Creating data loaders (batch_size={batch_size}, num_workers={num_workers})"
-        )
+        if k is None:
+            dataset_cls = TrajectoryDataset
+        elif k == 1:
+            dataset_cls = TransitionDataset
+        else:
+            dataset_cls = lambda path: RandomKFramesDataset(path, k=k)
 
         train_loader = DataLoader(
-            TransitionsDataset(str(self.data_dir / "train.npz")),
-            batch_size=batch_size,
+            dataset_cls(str(self.data_dir / "train.npz")),
             shuffle=True,
             num_workers=num_workers,
             pin_memory=True,
+            **kwargs,
         )
 
         val_loader = DataLoader(
-            TransitionsDataset(str(self.data_dir / "val.npz")),
-            batch_size=batch_size,
+            dataset_cls(str(self.data_dir / "val.npz")),
             shuffle=False,
             num_workers=num_workers,
             pin_memory=True,
+            **kwargs,
         )
 
         return train_loader, val_loader
@@ -468,7 +553,7 @@ class DataManager:
         num_workers = self.cfg.train.num_workers
 
         return DataLoader(
-            TransitionsDataset(str(self.data_dir / "test.npz")),
+            TransitionDataset(str(self.data_dir / "test.npz")),
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,

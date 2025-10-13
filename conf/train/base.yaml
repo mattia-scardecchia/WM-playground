@@ -1,6 +1,6 @@
-epochs_phase1: 100
-epochs_phase2: 100
-epochs_probe: 100
+steps_phase1: 7500
+steps_phase2: 7500
+steps_probe: 7500
 num_workers: 0
 ckpt_dir: "ckpts/" # relative path within hydra output dir
 eval_batch_size: 512
@@ -10,7 +10,6 @@ vae:
   lr: 0.002
   batch_size: 256
   weight_decay: 0.0
-  beta: 0.001
   gradient_clip:
     enabled: false
     max_norm: 10.0
@@ -20,7 +19,6 @@ contrastive:
   lr: 0.001
   batch_size: 256
   weight_decay: 0.0
-  temperature: 3.0
   gradient_clip:
     enabled: false
     max_norm: 10.0

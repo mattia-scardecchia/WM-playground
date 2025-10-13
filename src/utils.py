@@ -24,10 +24,6 @@ def seed_all(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def to_onehot(a: torch.Tensor, num_actions: int) -> torch.Tensor:
-    return torch.nn.functional.one_hot(a.long(), num_classes=num_actions).float()
-
-
 def make_mlp(
     sizes: Sequence[int], activation: str = "relu", out_act: str = None
 ) -> nn.Sequential:
